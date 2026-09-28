@@ -1,0 +1,20 @@
+{
+  "data": [
+    {
+      "id": "40527228461",
+      "user_id": "12826",
+      "user_login": "mychannel",
+      "user_name": "MyChannel",
+      "game_id": "512953",
+      "game_name": "Elden Ring",
+      "type": "live",
+      "title": "Каток & сюжетка",
+      "viewer_count": 142,
+      "started_at": "2026-09-28T18:00:00Z",
+      "language": "ru",
+      "thumbnail_url": "https://static-cdn.jtvnw.net/previews-ttv/live_user_mychannel-{width}x{height}.jpg",
+      "is_mature": false
+    }
+  ],
+  "pagination": {}
+}

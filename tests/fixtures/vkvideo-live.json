@@ -1,0 +1,11 @@
+{
+  "data": {
+    "isOnline": true,
+    "title": "Вечерний кооп",
+    "startTime": 1790000000,
+    "previewUrl": "https://images.vkplay.ru/preview/mychannel.jpg",
+    "category": { "id": 42, "title": "It Takes Two" },
+    "count": { "views": 87 },
+    "stream": { "id": 998877, "isOnline": true }
+  }
+}
