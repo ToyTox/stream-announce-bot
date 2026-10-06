@@ -22,6 +22,9 @@ const HELP = [
   '/text &lt;текст&gt; — врезка в следующий анонс',
   '/text — показать текущую врезку',
   '/text - — сбросить врезку',
+  'Фото — превью для всех анонсов вместо превью Twitch',
+  '/image — есть ли своё превью',
+  '/image - — сбросить превью',
   '/status — что сейчас в эфире',
   '/help — эта справка',
 ].join('\n');
@@ -69,8 +72,22 @@ export class CommandListener {
   /** Апдейты не от владельца игнорируются молча — бот может состоять в общих чатах. */
   private async handle(update: TelegramUpdate): Promise<void> {
     const message = update.message;
-    const text = message?.text?.trim();
-    if (!message || !text || message.from?.id !== this.deps.adminId) return;
+    if (!message || message.from?.id !== this.deps.adminId) return;
+
+    const photo = message.photo?.at(-1);
+    if (photo) {
+      this.deps.store.setAnnouncePhoto(photo.file_id);
+      await this.reply('Превью сохранено — будет во всех анонсах вместо превью Twitch, пока не замените или не сбросите командой /image -.');
+      return;
+    }
+    if (message.document?.mime_type?.startsWith('image/')) {
+      // sendPhoto не принимает file_id документа — нужна картинка, отправленная как фото.
+      await this.reply('Это картинка-файл. Отправьте её как фото, со сжатием.');
+      return;
+    }
+
+    const text = message.text?.trim();
+    if (!text) return;
 
     const [rawCommand = '', ...rest] = text.split(/\s+/);
     // В группах команды приходят как /text@my_bot.
@@ -80,6 +97,9 @@ export class CommandListener {
     switch (command) {
       case '/text':
         await this.handleText(argument);
+        return;
+      case '/image':
+        await this.handleImage(argument);
         return;
       case '/status':
         await this.reply(this.statusText());
@@ -112,6 +132,19 @@ export class CommandListener {
 
     this.deps.store.setAnnounceText(argument);
     await this.reply(`Врезка сохранена, уйдёт в следующий анонс:\n${escapeForReply(argument)}`);
+  }
+
+  private async handleImage(argument: string): Promise<void> {
+    if (argument === '-') {
+      this.deps.store.clearAnnouncePhoto();
+      await this.reply('Своё превью сброшено — в анонсе будет превью Twitch.');
+      return;
+    }
+    await this.reply(
+      this.deps.store.announcePhoto()
+        ? 'Своё превью задано и используется во всех анонсах. «/image -» — сбросить.'
+        : 'Своё превью не задано — в анонсе будет превью Twitch. Пришлите фото, чтобы заменить.'
+    );
   }
 
   private statusText(): string {

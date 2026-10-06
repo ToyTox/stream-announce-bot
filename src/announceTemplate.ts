@@ -63,7 +63,7 @@ function titleBlock(icon: string, title: string, game?: string | null): string {
 }
 
 export function renderAnnounce(input: AnnounceInput): string {
-  const head = `${GREETING}\n${titleBlock('🔴', input.title, input.game)}`;
+  const head = `${GREETING}\n\n${titleBlock('🔴', input.title, input.game)}`;
   const tailText = linksBlock(input.links);
 
   const custom = input.customText?.trim();
@@ -86,6 +86,7 @@ export function renderFinished(input: FinishedInput): string {
   return [
     titleBlock('⚫️', input.title, input.game),
     `Эфир завершён, длился ${formatDuration(input.durationMs)}`,
-    `${THANKS}\n${linksBlock(input.links)}`,
+    THANKS,
+    linksBlock(input.links),
   ].join('\n\n');
 }

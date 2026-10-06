@@ -228,6 +228,26 @@ describe('Announcer', () => {
     expect(text).not.toContain('Заголовок YouTube');
   });
 
+  it('своё превью из лички заменяет превью Twitch и остаётся для следующих эфиров', async () => {
+    harness.store.setAnnouncePhoto('photo-file-id');
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    await run(3);
+
+    expect(harness.telegram.sendPhoto.mock.calls[0]?.[0]).toBe('photo-file-id');
+    expect(harness.store.announcePhoto()).toBe('photo-file-id');
+  });
+
+  it('своё превью уходит, даже если Twitch не в эфире', async () => {
+    harness.store.setAnnouncePhoto('photo-file-id');
+    harness.watchers.youtube.state = liveStream('youtube', harness.clock);
+
+    await run(3);
+
+    expect(harness.telegram.sendPhoto.mock.calls[0]?.[0]).toBe('photo-file-id');
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('в DRY_RUN ничего не отправляет, но состояние ведёт', async () => {
     harness.cleanup();
     harness = createHarness({ dryRun: true });

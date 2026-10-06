@@ -25,10 +25,10 @@ describe('renderAnnounce', () => {
     expect(text).toContain('🎮 Elden Ring');
   });
 
-  it('начинается с приветствия', () => {
+  it('начинается с приветствия и пустой строки после него', () => {
     const text = renderAnnounce({ title: 'Стрим', links });
 
-    expect(text.split('\n')[0]).toBe('Всем привет');
+    expect(text.split('\n').slice(0, 3)).toEqual(['Всем привет', '', '🔴 <b>Стрим</b>']);
   });
 
   it('ссылки идут столбцом, по строке на площадку', () => {
@@ -100,6 +100,7 @@ describe('renderFinished', () => {
         'Эфир завершён, длился 2 ч 15 мин',
         '',
         'Всем спасибо, кто забегал на стрим, повтор стрима можно посмотреть тут:',
+        '',
         '▶️ <a href="https://twitch.tv/me">Twitch</a>',
         '▶️ <a href="https://www.youtube.com/channel/UC123">YouTube</a>',
         '▶️ <a href="https://vkvideo.ru/@me">VK Video</a>',

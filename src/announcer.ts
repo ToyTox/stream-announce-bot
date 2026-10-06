@@ -150,6 +150,8 @@ export class Announcer {
     if (links.length === 0) return;
 
     const customText = this.store.announceText();
+    // Своя картинка из лички важнее превью Twitch; живёт, пока её не сбросят через /image -.
+    const photo = this.store.announcePhoto() ?? source?.thumbnailUrl;
     const text = renderAnnounce({
       title: source?.title ?? 'Трансляция',
       game: source?.game,
@@ -165,8 +167,8 @@ export class Announcer {
     }
 
     try {
-      const message = source?.thumbnailUrl
-        ? await this.sendWithPhotoFallback(source.thumbnailUrl, text)
+      const message = photo
+        ? await this.sendWithPhotoFallback(photo, text)
         : await this.telegram.sendMessage(text);
 
       this.store.markAnnounced(
@@ -177,7 +179,7 @@ export class Announcer {
         customText
       );
       this.store.clearAnnounceText();
-        console.log(`✅ Анонс отправлен: ${links.map((link) => link.label).join(', ')}`);
+      console.log(`✅ Анонс отправлен: ${links.map((link) => link.label).join(', ')}`);
     } catch (error) {
       // Анонс не отмечен отправленным — попробуем в следующем тике.
       const message = error instanceof TelegramError ? error.message : String(error);
@@ -187,9 +189,9 @@ export class Announcer {
   }
 
   /** Превью может не подгрузиться на стороне Telegram — тогда шлём текстом. */
-  private async sendWithPhotoFallback(photoUrl: string, caption: string) {
+  private async sendWithPhotoFallback(photo: string, caption: string) {
     try {
-      return await this.telegram.sendPhoto(photoUrl, caption);
+      return await this.telegram.sendPhoto(photo, caption);
     } catch (error) {
       if (error instanceof TelegramError && error.code === 'upstream') {
         console.warn('⚠️  Превью не ушло, отправляю текстом:', error.message);

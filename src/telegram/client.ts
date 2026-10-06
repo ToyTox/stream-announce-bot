@@ -23,12 +23,21 @@ export class TelegramError extends Error {
   }
 }
 
+export interface TelegramPhotoSize {
+  file_id: string;
+  width: number;
+  height: number;
+}
+
 export interface TelegramMessage {
   message_id: number;
   chat: { id: number | string };
   text?: string;
   caption?: string;
   from?: { id: number };
+  /** Размеры одного фото по возрастанию — последний самый крупный. */
+  photo?: TelegramPhotoSize[];
+  document?: { file_id: string; mime_type?: string };
 }
 
 export interface TelegramUpdate {
@@ -101,10 +110,11 @@ export class TelegramClient {
     });
   }
 
-  async sendPhoto(photoUrl: string, caption: string, options?: SendOptions): Promise<TelegramMessage> {
+  /** photo — URL картинки или file_id фото, которое уже есть в Telegram. */
+  async sendPhoto(photo: string, caption: string, options?: SendOptions): Promise<TelegramMessage> {
     return this.call<TelegramMessage>('sendPhoto', {
       chat_id: this.chatId,
-      photo: photoUrl,
+      photo,
       caption,
       parse_mode: 'HTML',
       ...this.threadPayload(options),

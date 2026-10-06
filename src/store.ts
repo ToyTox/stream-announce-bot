@@ -89,6 +89,7 @@ function toStream(row: RawStream): BroadcastStreamRow {
 
 export const SETTING_ANNOUNCE_TEXT = 'announce_text';
 export const SETTING_UPDATES_OFFSET = 'updates_offset';
+export const SETTING_ANNOUNCE_PHOTO = 'announce_photo';
 
 export class Store {
   constructor(private readonly db: Db) {}
@@ -218,6 +219,19 @@ export class Store {
 
   clearAnnounceText(): void {
     this.deleteSetting(SETTING_ANNOUNCE_TEXT);
+  }
+
+  /** file_id картинки, присланной боту: заменяет превью Twitch во всех анонсах, пока её не сбросят. */
+  announcePhoto(): string | null {
+    return this.getSetting(SETTING_ANNOUNCE_PHOTO);
+  }
+
+  setAnnouncePhoto(fileId: string, now: number = Date.now()): void {
+    this.setSetting(SETTING_ANNOUNCE_PHOTO, fileId, now);
+  }
+
+  clearAnnouncePhoto(): void {
+    this.deleteSetting(SETTING_ANNOUNCE_PHOTO);
   }
 
   updatesOffset(): number | null {
