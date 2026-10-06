@@ -14,11 +14,6 @@ function caption(): string {
   return harness.telegram.sendPhoto.mock.calls[0]?.[1] ?? '';
 }
 
-function lastEdit(): string {
-  const calls = harness.telegram.editMessageCaption.mock.calls;
-  return calls[calls.length - 1]?.[1] ?? '';
-}
-
 /** Прогоняет тики так, чтобы суммарно прошло указанное время. */
 async function run(minutes: number): Promise<void> {
   for (let i = 0; i < minutes; i++) {
@@ -63,7 +58,7 @@ describe('Announcer', () => {
     expect(caption()).toContain('YouTube');
   });
 
-  it('платформа подключилась после анонса — сообщение отредактировано, второго нет', async () => {
+  it('платформа подключилась после анонса — анонс не трогаем и второго не шлём', async () => {
     harness.watchers.twitch.state = liveStream('twitch', harness.clock);
     await run(3);
     expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
@@ -73,9 +68,21 @@ describe('Announcer', () => {
 
     expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
     expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
-    expect(harness.telegram.editMessageCaption).toHaveBeenCalled();
-    expect(lastEdit()).toContain('Twitch');
-    expect(lastEdit()).toContain('VK Live');
+    expect(harness.telegram.editMessageCaption).not.toHaveBeenCalled();
+    expect(harness.telegram.editMessageText).not.toHaveBeenCalled();
+  });
+
+  it('площадка упала после анонса — ссылки в анонсе остаются', async () => {
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    harness.watchers.youtube.state = liveStream('youtube', harness.clock);
+    await run(3);
+
+    harness.watchers.youtube.state = null;
+    await run(2);
+
+    expect(harness.telegram.editMessageCaption).not.toHaveBeenCalled();
+    expect(harness.telegram.editMessageText).not.toHaveBeenCalled();
+    expect(caption()).toContain('YouTube');
   });
 
   it('за длинный эфир отправляет ровно одно сообщение и не правит его вхолостую', async () => {
@@ -219,28 +226,6 @@ describe('Announcer', () => {
     const text = harness.telegram.sendMessage.mock.calls[0]?.[0] ?? '';
     expect(text).toContain('YouTube');
     expect(text).not.toContain('Заголовок YouTube');
-  });
-
-  it('Twitch подключился после анонса — заголовок дописывается правкой', async () => {
-    harness.watchers.youtube.state = liveStream('youtube', harness.clock, { title: 'Заголовок YouTube' });
-    await run(3);
-
-    harness.watchers.twitch.state = liveStream('twitch', harness.clock, { title: 'Заголовок Twitch' });
-    await run(1);
-
-    expect(lastEdit()).toContain('Заголовок Twitch');
-  });
-
-  it('заголовок Twitch не пропадает, пока Twitch моргает', async () => {
-    harness.watchers.twitch.state = liveStream('twitch', harness.clock, { title: 'Заголовок Twitch' });
-    harness.watchers.youtube.state = liveStream('youtube', harness.clock, { title: 'Заголовок YouTube' });
-    await run(3);
-
-    harness.watchers.twitch.state = null;
-    await run(1);
-
-    expect(lastEdit()).toContain('Заголовок Twitch');
-    expect(lastEdit()).not.toContain('>Twitch<');
   });
 
   it('в DRY_RUN ничего не отправляет, но состояние ведёт', async () => {

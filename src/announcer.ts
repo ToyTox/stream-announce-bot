@@ -42,8 +42,6 @@ export class Announcer {
   private readonly telegram: TelegramClient;
   private readonly config: Config;
   private readonly now: () => number;
-  /** Последний отправленный текст: без него правка уходила бы каждый тик вхолостую. */
-  private lastRendered = new Map<number, string>();
 
   constructor(deps: AnnouncerDeps) {
     this.store = deps.store;
@@ -93,15 +91,12 @@ export class Announcer {
     const fresh = this.store.openBroadcast();
     if (!fresh) return;
 
-    if (fresh.announcedAt === null) {
+    // Анонс — снимок площадок на момент отправки: после неё сообщение не правим,
+    // даже если площадка упала или подключилась позже.
+    if (fresh.announcedAt === null && now - fresh.startedAt >= this.config.announceGraceMs) {
       // Ждём остальные площадки: OBS поднимает их с разницей в десятки секунд.
-      if (now - fresh.startedAt >= this.config.announceGraceMs) {
-        await this.announce(fresh.id, now);
-      }
-      return;
+      await this.announce(fresh.id, now);
     }
-
-    await this.syncAnnouncement(fresh.id);
   }
 
   private async probeAll(): Promise<ProbeResult[]> {
@@ -123,7 +118,7 @@ export class Announcer {
     return this.store.createBroadcast(now);
   }
 
-  /** Ссылки всегда в фиксированном порядке платформ, чтобы правка сообщения не переставляла их. */
+  /** Ссылки всегда в фиксированном порядке платформ, независимо от того, кто стартовал первым. */
   private links(broadcastId: number): ChannelLink[] {
     const live = this.store.liveStreamsOf(broadcastId);
     return PLATFORMS.flatMap((platform): ChannelLink[] => {
@@ -182,8 +177,7 @@ export class Announcer {
         customText
       );
       this.store.clearAnnounceText();
-      this.lastRendered.set(broadcastId, text);
-      console.log(`✅ Анонс отправлен: ${links.map((link) => link.label).join(', ')}`);
+        console.log(`✅ Анонс отправлен: ${links.map((link) => link.label).join(', ')}`);
     } catch (error) {
       // Анонс не отмечен отправленным — попробуем в следующем тике.
       const message = error instanceof TelegramError ? error.message : String(error);
@@ -205,39 +199,10 @@ export class Announcer {
     }
   }
 
-  /** Состав площадок изменился после анонса — правим то же сообщение, нового не шлём. */
-  private async syncAnnouncement(broadcastId: number): Promise<void> {
-    const broadcast = this.store.openBroadcast();
-    if (!broadcast || broadcast.messageId === null) return;
-
-    const source = this.source(broadcastId);
-    const links = this.links(broadcastId);
-    if (links.length === 0) return;
-
-    const text = renderAnnounce({
-      title: source?.title ?? 'Трансляция',
-      game: source?.game,
-      customText: broadcast.announceText,
-      links,
-    });
-
-    if (this.lastRendered.get(broadcastId) === text) return;
-    if (this.config.dryRun) {
-      console.log('🧪 DRY_RUN, сообщение не отредактировано:\n' + text);
-      this.lastRendered.set(broadcastId, text);
-      return;
-    }
-
-    await this.editAnnouncement(broadcast.messageId, text);
-    this.lastRendered.set(broadcastId, text);
-    console.log(`✏️  Сообщение обновлено: ${links.map((link) => link.label).join(', ')}`);
-  }
-
   private async finishBroadcast(broadcastId: number, now: number): Promise<void> {
     const source = this.source(broadcastId);
     const broadcast = this.store.openBroadcast();
     this.store.endBroadcast(broadcastId, now);
-    this.lastRendered.delete(broadcastId);
     console.log('⚫️ Эфир завершён');
 
     // Итог шлём только к эфиру, о котором объявляли. Сам анонс не трогаем.
@@ -276,32 +241,6 @@ export class Announcer {
     if (vkVideoReplayUrl) links.push({ label: 'VK Video', url: vkVideoReplayUrl });
     if (vkvideo) links.push({ label: 'VK Live', url: `${VK_LIVE_BASE}/${vkvideo.channel}` });
     return links;
-  }
-
-  /**
-   * Анонс мог уйти как фото с подписью или как текст — от этого зависит метод правки.
-   * Тип сообщения не храним: пробуем подпись, а на «нет подписи» переключаемся на текст.
-   */
-  private async editAnnouncement(messageId: number, text: string): Promise<void> {
-    try {
-      await this.telegram.editMessageCaption(messageId, text);
-    } catch (error) {
-      const message = error instanceof TelegramError ? error.message : String(error);
-      // «message is not modified» — норма: состав ссылок не изменился.
-      if (/not modified/i.test(message)) return;
-      if (/no caption|message to edit|can't be edited/i.test(message)) {
-        try {
-          await this.telegram.editMessageText(messageId, text);
-          return;
-        } catch (textError) {
-          const textMessage = textError instanceof TelegramError ? textError.message : String(textError);
-          if (/not modified/i.test(textMessage)) return;
-          console.error('❌ Не удалось обновить сообщение:', textMessage);
-          return;
-        }
-      }
-      console.error('❌ Не удалось обновить сообщение:', message);
-    }
   }
 
   /** Для команды /status. */
