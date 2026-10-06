@@ -62,4 +62,12 @@ describe('CommandListener: превью', () => {
 
     expect(harness.store.announcePhoto()).toBeNull();
   });
+
+  it('/image_clear сбрасывает превью так же, как /image -', async () => {
+    harness.store.setAnnouncePhoto('large');
+
+    await deliver(chat({ text: '/image_clear' }));
+
+    expect(harness.store.announcePhoto()).toBeNull();
+  });
 });

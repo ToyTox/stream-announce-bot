@@ -24,7 +24,7 @@ const HELP = [
   '/text - — сбросить врезку',
   'Фото — превью для всех анонсов вместо превью Twitch',
   '/image — есть ли своё превью',
-  '/image - — сбросить превью',
+  '/image - или /image_clear — сбросить превью',
   '/status — что сейчас в эфире',
   '/help — эта справка',
 ].join('\n');
@@ -100,6 +100,10 @@ export class CommandListener {
         return;
       case '/image':
         await this.handleImage(argument);
+        return;
+      // Отдельная команда для меню BotFather: туда нельзя добавить команду с аргументом.
+      case '/image_clear':
+        await this.handleImage('-');
         return;
       case '/status':
         await this.reply(this.statusText());
