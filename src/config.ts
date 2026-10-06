@@ -33,7 +33,9 @@ export interface Config {
   announceGraceMs: number;
   offlineGraceMs: number;
   primaryPlatform: Platform;
-  editOnEnd: boolean;
+  announceEnd: boolean;
+  /** Канал на vkvideo.ru с записями — для итогового сообщения. */
+  vkVideoReplayUrl?: string;
   dryRun: boolean;
   databasePath: string;
 }
@@ -137,7 +139,8 @@ export function loadConfig(env: Env = process.env): Config {
     announceGraceMs: int(env, 'ANNOUNCE_GRACE_MS', 90_000),
     offlineGraceMs: int(env, 'OFFLINE_GRACE_MS', 180_000),
     primaryPlatform: primaryRaw,
-    editOnEnd: bool(env, 'EDIT_ON_END', true),
+    announceEnd: bool(env, 'ANNOUNCE_END', true),
+    vkVideoReplayUrl: str(env, 'VKVIDEO_REPLAY_URL'),
     dryRun: bool(env, 'DRY_RUN', false),
     databasePath: str(env, 'DATABASE_PATH') ?? './data/bot.db',
   };

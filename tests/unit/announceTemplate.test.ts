@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { CAPTION_LIMIT, formatDuration, renderAnnounce } from '../../src/announceTemplate.js';
+import { CAPTION_LIMIT, formatDuration, renderAnnounce, renderFinished } from '../../src/announceTemplate.js';
 
 const links = [
-  { platform: 'twitch' as const, url: 'https://twitch.tv/me' },
-  { platform: 'youtube' as const, url: 'https://www.youtube.com/watch?v=abc' },
-  { platform: 'vkvideo' as const, url: 'https://live.vkvideo.ru/me' },
+  { label: 'Twitch', url: 'https://twitch.tv/me' },
+  { label: 'YouTube', url: 'https://www.youtube.com/watch?v=abc' },
+  { label: 'VK Live', url: 'https://live.vkvideo.ru/me' },
 ];
 
 describe('renderAnnounce', () => {
@@ -13,7 +13,7 @@ describe('renderAnnounce', () => {
 
     expect(text).toContain('<a href="https://twitch.tv/me">Twitch</a>');
     expect(text).not.toContain('YouTube');
-    expect(text).not.toContain('VK Video');
+    expect(text).not.toContain('VK Live');
   });
 
   it('три платформы — три ссылки в одном сообщении', () => {
@@ -21,9 +21,25 @@ describe('renderAnnounce', () => {
 
     expect(text).toContain('Twitch');
     expect(text).toContain('YouTube');
-    expect(text).toContain('VK Video');
+    expect(text).toContain('VK Live');
     expect(text).toContain('🎮 Elden Ring');
-    expect(text.match(/▶️/g)).toHaveLength(1);
+  });
+
+  it('начинается с приветствия', () => {
+    const text = renderAnnounce({ title: 'Стрим', links });
+
+    expect(text.split('\n')[0]).toBe('Всем привет');
+  });
+
+  it('ссылки идут столбцом, по строке на площадку', () => {
+    const text = renderAnnounce({ title: 'Стрим', links });
+    const linkLines = text.split('\n').filter((line) => line.startsWith('▶️'));
+
+    expect(linkLines).toEqual([
+      '▶️ <a href="https://twitch.tv/me">Twitch</a>',
+      '▶️ <a href="https://www.youtube.com/watch?v=abc">YouTube</a>',
+      '▶️ <a href="https://live.vkvideo.ru/me">VK Live</a>',
+    ]);
   });
 
   it('подставляет врезку', () => {
@@ -58,16 +74,38 @@ describe('renderAnnounce', () => {
     expect(text).toContain('…');
     expect(text).toContain('Twitch');
   });
+});
 
-  it('после окончания эфира показывает длительность вместо ссылок', () => {
-    const text = renderAnnounce({
+describe('renderFinished', () => {
+  const channels = [
+    { label: 'Twitch', url: 'https://twitch.tv/me' },
+    { label: 'YouTube', url: 'https://www.youtube.com/channel/UC123' },
+    { label: 'VK Video', url: 'https://vkvideo.ru/@me' },
+    { label: 'VK Live', url: 'https://live.vkvideo.ru/me' },
+  ];
+
+  it('итог без приветствия: тема, игра, длительность, благодарность и ссылки столбцом', () => {
+    const text = renderFinished({
       title: 'Стрим',
-      links: [],
-      endedAfterMs: 2 * 60 * 60 * 1000 + 15 * 60 * 1000,
+      game: 'Elden Ring',
+      durationMs: 2 * 60 * 60 * 1000 + 15 * 60 * 1000,
+      links: channels,
     });
 
-    expect(text).toContain('Эфир завершён, длился 2 ч 15 мин');
-    expect(text).not.toContain('▶️');
+    expect(text).toBe(
+      [
+        '⚫️ <b>Стрим</b>',
+        '🎮 Elden Ring',
+        '',
+        'Эфир завершён, длился 2 ч 15 мин',
+        '',
+        'Всем спасибо, кто забегал на стрим, повтор стрима можно посмотреть тут:',
+        '▶️ <a href="https://twitch.tv/me">Twitch</a>',
+        '▶️ <a href="https://www.youtube.com/channel/UC123">YouTube</a>',
+        '▶️ <a href="https://vkvideo.ru/@me">VK Video</a>',
+        '▶️ <a href="https://live.vkvideo.ru/me">VK Live</a>',
+      ].join('\n')
+    );
   });
 });
 

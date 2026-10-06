@@ -49,7 +49,7 @@ describe('Announcer', () => {
     expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
     expect(caption()).toContain('Twitch');
     expect(caption()).not.toContain('YouTube');
-    expect(caption()).not.toContain('VK Video');
+    expect(caption()).not.toContain('VK Live');
   });
 
   it('две платформы стартовали разом — одно сообщение с двумя ссылками', async () => {
@@ -75,7 +75,7 @@ describe('Announcer', () => {
     expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
     expect(harness.telegram.editMessageCaption).toHaveBeenCalled();
     expect(lastEdit()).toContain('Twitch');
-    expect(lastEdit()).toContain('VK Video');
+    expect(lastEdit()).toContain('VK Live');
   });
 
   it('за длинный эфир отправляет ровно одно сообщение и не правит его вхолостую', async () => {
@@ -100,7 +100,14 @@ describe('Announcer', () => {
     expect(harness.store.openBroadcast()).not.toBeNull();
   });
 
-  it('все офлайн дольше offlineGraceMs — эфир закрыт, подпись обновлена', async () => {
+  it('все офлайн дольше offlineGraceMs — эфир закрыт, итог ушёл отдельным сообщением', async () => {
+    harness.cleanup();
+    harness = createHarness({
+      twitch: { login: 'me', clientId: 'id', clientSecret: 'secret' },
+      vkvideo: { channel: 'me' },
+      vkVideoReplayUrl: 'https://vkvideo.ru/@me',
+    });
+    harness.store.setAnnounceText('Врезка анонса');
     harness.watchers.twitch.state = liveStream('twitch', harness.clock);
     await run(3);
 
@@ -108,7 +115,30 @@ describe('Announcer', () => {
     await run(5);
 
     expect(harness.store.openBroadcast()).toBeNull();
-    expect(lastEdit()).toContain('Эфир завершён');
+    expect(harness.telegram.editMessageCaption).not.toHaveBeenCalled();
+    expect(harness.telegram.sendMessage).toHaveBeenCalledTimes(1);
+
+    const text = harness.telegram.sendMessage.mock.calls[0]?.[0] ?? '';
+    expect(text).not.toContain('Всем привет');
+    expect(text).not.toContain('Врезка анонса');
+    // Последний live-сигнал на 3-й минуте, первый — на 1-й.
+    expect(text).toContain('Эфир завершён, длился 2 мин');
+    expect(text).toContain('<a href="https://twitch.tv/me">Twitch</a>');
+    expect(text).toContain('<a href="https://vkvideo.ru/@me">VK Video</a>');
+    expect(text).toContain('<a href="https://live.vkvideo.ru/me">VK Live</a>');
+    expect(text).not.toContain('YouTube');
+  });
+
+  it('эфир без анонса — итог не отправляется', async () => {
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    await run(1);
+
+    harness.watchers.twitch.state = null;
+    await run(5);
+
+    expect(harness.store.openBroadcast()).toBeNull();
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+    expect(harness.telegram.sendPhoto).not.toHaveBeenCalled();
   });
 
   it('ошибка проверки не закрывает эфир', async () => {
@@ -128,8 +158,24 @@ describe('Announcer', () => {
 
     await run(3);
 
-    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
-    expect(caption()).toContain('YouTube');
+    expect(harness.telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(harness.telegram.sendMessage.mock.calls[0]?.[0]).toContain('YouTube');
+  });
+
+  it('с VKVIDEO_REPLAY_URL в анонсе две ссылки VK: Video и Live', async () => {
+    harness.cleanup();
+    harness = createHarness({ vkVideoReplayUrl: 'https://vkvideo.ru/@me' });
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    harness.watchers.vkvideo.state = liveStream('vkvideo', harness.clock);
+
+    await run(3);
+
+    const linkLines = caption().split('\n').filter((line) => line.startsWith('▶️'));
+    expect(linkLines).toEqual([
+      '▶️ <a href="https://twitch.tv/me">Twitch</a>',
+      '▶️ <a href="https://vkvideo.ru/@me">VK Video</a>',
+      '▶️ <a href="https://live.vkvideo.ru/me">VK Live</a>',
+    ]);
   });
 
   it('рестарт посреди эфира не порождает второй анонс', async () => {
@@ -154,7 +200,7 @@ describe('Announcer', () => {
     expect(harness.store.announceText()).toBeNull();
   });
 
-  it('заголовок и превью берутся с приоритетной площадки', async () => {
+  it('заголовок и превью берутся только с Twitch', async () => {
     harness.watchers.twitch.state = liveStream('twitch', harness.clock, { title: 'Заголовок Twitch' });
     harness.watchers.youtube.state = liveStream('youtube', harness.clock, { title: 'Заголовок YouTube' });
 
@@ -164,12 +210,37 @@ describe('Announcer', () => {
     expect(caption()).toContain('Заголовок Twitch');
   });
 
-  it('без приоритетной площадки берёт следующую доступную', async () => {
+  it('без Twitch заголовок и превью с других площадок не берутся', async () => {
     harness.watchers.youtube.state = liveStream('youtube', harness.clock, { title: 'Заголовок YouTube' });
 
     await run(3);
 
-    expect(caption()).toContain('Заголовок YouTube');
+    expect(harness.telegram.sendPhoto).not.toHaveBeenCalled();
+    const text = harness.telegram.sendMessage.mock.calls[0]?.[0] ?? '';
+    expect(text).toContain('YouTube');
+    expect(text).not.toContain('Заголовок YouTube');
+  });
+
+  it('Twitch подключился после анонса — заголовок дописывается правкой', async () => {
+    harness.watchers.youtube.state = liveStream('youtube', harness.clock, { title: 'Заголовок YouTube' });
+    await run(3);
+
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock, { title: 'Заголовок Twitch' });
+    await run(1);
+
+    expect(lastEdit()).toContain('Заголовок Twitch');
+  });
+
+  it('заголовок Twitch не пропадает, пока Twitch моргает', async () => {
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock, { title: 'Заголовок Twitch' });
+    harness.watchers.youtube.state = liveStream('youtube', harness.clock, { title: 'Заголовок YouTube' });
+    await run(3);
+
+    harness.watchers.twitch.state = null;
+    await run(1);
+
+    expect(lastEdit()).toContain('Заголовок Twitch');
+    expect(lastEdit()).not.toContain('>Twitch<');
   });
 
   it('в DRY_RUN ничего не отправляет, но состояние ведёт', async () => {

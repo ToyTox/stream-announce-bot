@@ -19,7 +19,7 @@ describe('loadConfig', () => {
     expect(config.youtube).toBeUndefined();
     expect(config.announceGraceMs).toBe(90_000);
     expect(config.primaryPlatform).toBe('twitch');
-    expect(config.editOnEnd).toBe(true);
+    expect(config.announceEnd).toBe(true);
   });
 
   it('требует токен бота', () => {
@@ -54,12 +54,12 @@ describe('loadConfig', () => {
       TELEGRAM_TOPIC_ID: '42',
       POLL_INTERVAL_MS: '30000',
       DRY_RUN: 'true',
-      EDIT_ON_END: 'false',
+      ANNOUNCE_END: 'false',
     });
 
     expect(config.telegram.topicId).toBe(42);
     expect(config.pollIntervalMs).toBe(30_000);
     expect(config.dryRun).toBe(true);
-    expect(config.editOnEnd).toBe(false);
+    expect(config.announceEnd).toBe(false);
   });
 });

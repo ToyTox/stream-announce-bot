@@ -80,7 +80,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     announceGraceMs: 90_000,
     offlineGraceMs: 180_000,
     primaryPlatform: 'twitch',
-    editOnEnd: true,
+    announceEnd: true,
     dryRun: false,
     databasePath: ':memory:',
     ...overrides,

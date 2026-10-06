@@ -5,7 +5,7 @@ import { BaseWatcher, httpConfig } from './base.js';
 
 /** live.vkplay.ru переехал на live.vkvideo.ru — API и канал те же, хост вынесен в константу. */
 const API_BASE = 'https://api.live.vkvideo.ru/v1';
-const CHANNEL_BASE = 'https://live.vkvideo.ru';
+export const CHANNEL_BASE = 'https://live.vkvideo.ru';
 
 interface StreamResponse {
   data?: {

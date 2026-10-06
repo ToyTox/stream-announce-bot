@@ -1,20 +1,28 @@
-import { PLATFORM_LABELS, Platform } from './types.js';
-
 /** Подпись к фото в Telegram ограничена 1024 символами — за этим следит trimToLimit(). */
 export const CAPTION_LIMIT = 1024;
 
-export interface AnnounceLink {
-  platform: Platform;
-  url: string;
-}
+export const GREETING = 'Всем привет';
+
+export const THANKS = 'Всем спасибо, кто забегал на стрим, повтор стрима можно посмотреть тут:';
 
 export interface AnnounceInput {
   title: string;
   game?: string | null;
   customText?: string | null;
-  links: AnnounceLink[];
-  /** Заполняется после окончания эфира: длительность в миллисекундах. */
-  endedAfterMs?: number;
+  links: ChannelLink[];
+}
+
+/** Ссылка в сообщении: подпись своя, потому что VK Video и VK Live — разные ссылки одной площадки. */
+export interface ChannelLink {
+  label: string;
+  url: string;
+}
+
+export interface FinishedInput {
+  title: string;
+  game?: string | null;
+  durationMs: number;
+  links: ChannelLink[];
 }
 
 /** Экранирование для parse_mode=HTML: в названиях стримов амперсанд встречается регулярно. */
@@ -41,30 +49,22 @@ function trimCustomText(text: string, budget: number): string {
   return `${text.slice(0, Math.max(0, budget - 1)).trimEnd()}…`;
 }
 
-function linksLine(links: AnnounceLink[]): string {
+/** Ссылки столбцом: по строке на площадку. */
+function linksBlock(links: ChannelLink[]): string {
   return links
-    .map((link) => `<a href="${escapeHtml(link.url)}">${PLATFORM_LABELS[link.platform]}</a>`)
-    .join(' · ');
+    .map((link) => `▶️ <a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a>`)
+    .join('\n');
+}
+
+function titleBlock(icon: string, title: string, game?: string | null): string {
+  const lines = [`${icon} <b>${escapeHtml(title)}</b>`];
+  if (game) lines.push(`🎮 ${escapeHtml(game)}`);
+  return lines.join('\n');
 }
 
 export function renderAnnounce(input: AnnounceInput): string {
-  const header =
-    input.endedAfterMs === undefined
-      ? `🔴 <b>${escapeHtml(input.title)}</b>`
-      : `⚫️ <b>${escapeHtml(input.title)}</b>`;
-
-  const parts: string[] = [header];
-  if (input.game) parts.push(`🎮 ${escapeHtml(input.game)}`);
-
-  const head = parts.join('\n');
-
-  const tail: string[] = [];
-  if (input.endedAfterMs !== undefined) {
-    tail.push(`Эфир завершён, длился ${formatDuration(input.endedAfterMs)}`);
-  } else if (input.links.length > 0) {
-    tail.push(`▶️ ${linksLine(input.links)}`);
-  }
-  const tailText = tail.join('\n');
+  const head = `${GREETING}\n${titleBlock('🔴', input.title, input.game)}`;
+  const tailText = linksBlock(input.links);
 
   const custom = input.customText?.trim();
   if (!custom) {
@@ -79,4 +79,13 @@ export function renderAnnounce(input: AnnounceInput): string {
   }
 
   return tailText ? `${head}\n\n${trimmed}\n\n${tailText}` : `${head}\n\n${trimmed}`;
+}
+
+/** Итог эфира — отдельное сообщение: ссылки ведут на каналы, где лежит запись. */
+export function renderFinished(input: FinishedInput): string {
+  return [
+    titleBlock('⚫️', input.title, input.game),
+    `Эфир завершён, длился ${formatDuration(input.durationMs)}`,
+    `${THANKS}\n${linksBlock(input.links)}`,
+  ].join('\n\n');
 }

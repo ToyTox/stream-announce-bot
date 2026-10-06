@@ -1,9 +1,10 @@
-import { renderAnnounce, AnnounceLink } from './announceTemplate.js';
+import { renderAnnounce, renderFinished, ChannelLink } from './announceTemplate.js';
 import type { Config } from './config.js';
 import { Store } from './store.js';
 import { TelegramClient, TelegramError } from './telegram/client.js';
 import { LiveStream, PLATFORMS, PLATFORM_LABELS, Platform } from './types.js';
 import type { BaseWatcher } from './watchers/base.js';
+import { CHANNEL_BASE as VK_LIVE_BASE } from './watchers/vkvideo.js';
 
 /**
  * Оркестратор. Сущность здесь — не «стрим на платформе», а эфир: OBS поднимает
@@ -123,37 +124,40 @@ export class Announcer {
   }
 
   /** Ссылки всегда в фиксированном порядке платформ, чтобы правка сообщения не переставляла их. */
-  private links(broadcastId: number): AnnounceLink[] {
+  private links(broadcastId: number): ChannelLink[] {
     const live = this.store.liveStreamsOf(broadcastId);
-    return PLATFORMS.flatMap((platform) => {
+    return PLATFORMS.flatMap((platform): ChannelLink[] => {
       const stream = live.find((item) => item.platform === platform);
-      return stream ? [{ platform, url: stream.url }] : [];
+      if (!stream) return [];
+      const link = { label: PLATFORM_LABELS[platform], url: stream.url };
+      // Эфир VK Live виден и на vkvideo.ru — ставим обе ссылки, VK Video первой, как в итоге эфира.
+      if (platform === 'vkvideo' && this.config.vkVideoReplayUrl) {
+        return [{ label: 'VK Video', url: this.config.vkVideoReplayUrl }, link];
+      }
+      return [link];
     });
   }
 
-  /** Заголовок, игру и превью берём с приоритетной площадки, иначе с первой доступной. */
+  /**
+   * Заголовок, игру и превью берём только с приоритетной площадки: на других
+   * названия могут отличаться. Ищем и среди отвалившихся, чтобы заголовок не
+   * пропадал из сообщения, пока площадка моргает.
+   */
   private source(broadcastId: number) {
-    const live = this.store.liveStreamsOf(broadcastId);
-    const order: Platform[] = [
-      this.config.primaryPlatform,
-      ...PLATFORMS.filter((platform) => platform !== this.config.primaryPlatform),
-    ];
-    for (const platform of order) {
-      const stream = live.find((item) => item.platform === platform);
-      if (stream) return stream;
-    }
-    return undefined;
+    return this.store
+      .streamsOf(broadcastId)
+      .find((stream) => stream.platform === this.config.primaryPlatform);
   }
 
   private async announce(broadcastId: number, now: number): Promise<void> {
     const source = this.source(broadcastId);
     const links = this.links(broadcastId);
-    if (!source || links.length === 0) return;
+    if (links.length === 0) return;
 
     const customText = this.store.announceText();
     const text = renderAnnounce({
-      title: source.title ?? 'Трансляция',
-      game: source.game,
+      title: source?.title ?? 'Трансляция',
+      game: source?.game,
       customText,
       links,
     });
@@ -166,7 +170,7 @@ export class Announcer {
     }
 
     try {
-      const message = source.thumbnailUrl
+      const message = source?.thumbnailUrl
         ? await this.sendWithPhotoFallback(source.thumbnailUrl, text)
         : await this.telegram.sendMessage(text);
 
@@ -179,7 +183,7 @@ export class Announcer {
       );
       this.store.clearAnnounceText();
       this.lastRendered.set(broadcastId, text);
-      console.log(`✅ Анонс отправлен: ${links.map((link) => PLATFORM_LABELS[link.platform]).join(', ')}`);
+      console.log(`✅ Анонс отправлен: ${links.map((link) => link.label).join(', ')}`);
     } catch (error) {
       // Анонс не отмечен отправленным — попробуем в следующем тике.
       const message = error instanceof TelegramError ? error.message : String(error);
@@ -208,11 +212,11 @@ export class Announcer {
 
     const source = this.source(broadcastId);
     const links = this.links(broadcastId);
-    if (!source || links.length === 0) return;
+    if (links.length === 0) return;
 
     const text = renderAnnounce({
-      title: source.title ?? 'Трансляция',
-      game: source.game,
+      title: source?.title ?? 'Трансляция',
+      game: source?.game,
       customText: broadcast.announceText,
       links,
     });
@@ -226,29 +230,52 @@ export class Announcer {
 
     await this.editAnnouncement(broadcast.messageId, text);
     this.lastRendered.set(broadcastId, text);
-    console.log(`✏️  Сообщение обновлено: ${links.map((link) => PLATFORM_LABELS[link.platform]).join(', ')}`);
+    console.log(`✏️  Сообщение обновлено: ${links.map((link) => link.label).join(', ')}`);
   }
 
   private async finishBroadcast(broadcastId: number, now: number): Promise<void> {
-    const source = this.source(broadcastId) ?? this.store.streamsOf(broadcastId)[0];
+    const source = this.source(broadcastId);
     const broadcast = this.store.openBroadcast();
     this.store.endBroadcast(broadcastId, now);
     this.lastRendered.delete(broadcastId);
     console.log('⚫️ Эфир завершён');
 
-    if (!this.config.editOnEnd || !broadcast || broadcast.messageId === null || this.config.dryRun) {
+    // Итог шлём только к эфиру, о котором объявляли. Сам анонс не трогаем.
+    if (!this.config.announceEnd || !broadcast || broadcast.announcedAt === null) return;
+
+    const text = renderFinished({
+      title: source?.title ?? 'Трансляция',
+      game: source?.game,
+      // Без хвоста offlineGraceMs: эфир кончился, когда площадки замолчали, а не когда мы это признали.
+      durationMs: broadcast.lastLiveAt - broadcast.startedAt,
+      links: this.channelLinks(),
+    });
+
+    if (this.config.dryRun) {
+      console.log('🧪 DRY_RUN, итог эфира не отправлен:\n' + text);
       return;
     }
 
-    const text = renderAnnounce({
-      title: source?.title ?? 'Трансляция',
-      game: source?.game,
-      customText: broadcast.announceText,
-      links: [],
-      endedAfterMs: now - broadcast.startedAt,
-    });
+    try {
+      await this.telegram.sendMessage(text);
+      console.log('✅ Итог эфира отправлен');
+    } catch (error) {
+      const message = error instanceof TelegramError ? error.message : String(error);
+      console.error('❌ Не удалось отправить итог эфира:', message);
+    }
+  }
 
-    await this.editAnnouncement(broadcast.messageId, text);
+  /** Ссылки на каналы для итогового сообщения — по настроенным площадкам, а не по тем, что были в эфире. */
+  private channelLinks(): ChannelLink[] {
+    const { twitch, youtube, vkvideo, vkVideoReplayUrl } = this.config;
+    const links: ChannelLink[] = [];
+    if (twitch) links.push({ label: 'Twitch', url: `https://twitch.tv/${twitch.login}` });
+    if (youtube) {
+      links.push({ label: 'YouTube', url: `https://www.youtube.com/channel/${youtube.channelId}` });
+    }
+    if (vkVideoReplayUrl) links.push({ label: 'VK Video', url: vkVideoReplayUrl });
+    if (vkvideo) links.push({ label: 'VK Live', url: `${VK_LIVE_BASE}/${vkvideo.channel}` });
+    return links;
   }
 
   /**
