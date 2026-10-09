@@ -21,6 +21,22 @@ export interface AnnouncerDeps {
   now?: () => number;
 }
 
+/** Итог последней проверки площадки — для панели. */
+export interface PlatformState {
+  platform: Platform;
+  state: 'live' | 'offline' | 'error';
+  error?: string;
+  checkedAt: number;
+}
+
+export interface BroadcastStatus {
+  startedAt: number;
+  announcedAt: number | null;
+  chatId: string | null;
+  messageId: number | null;
+  platforms: Platform[];
+}
+
 type ProbeResult =
   | { platform: Platform; status: 'live'; stream: LiveStream }
   | { platform: Platform; status: 'offline' }
@@ -36,12 +52,25 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Ссылка на канал площадки; undefined — площадка не настроена. */
+export function channelUrl(config: Config, platform: Platform): string | undefined {
+  switch (platform) {
+    case 'twitch':
+      return config.twitch && `https://twitch.tv/${config.twitch.login}`;
+    case 'youtube':
+      return config.youtube && `https://www.youtube.com/channel/${config.youtube.channelId}`;
+    case 'vkvideo':
+      return config.vkvideo && `${VK_LIVE_BASE}/${config.vkvideo.channel}`;
+  }
+}
+
 export class Announcer {
   private readonly store: Store;
   private readonly watchers: BaseWatcher[];
   private readonly telegram: TelegramClient;
   private readonly config: Config;
   private readonly now: () => number;
+  private readonly probeStates = new Map<Platform, PlatformState>();
 
   constructor(deps: AnnouncerDeps) {
     this.store = deps.store;
@@ -62,6 +91,14 @@ export class Announcer {
       if (probe.status === 'unknown') {
         // Только текст ошибки: полный дамп axios забивает лог на сотни строк.
         console.warn(`⚠️  ${PLATFORM_LABELS[probe.platform]}: не удалось проверить — ${describe(probe.error)}`);
+        this.probeStates.set(probe.platform, {
+          platform: probe.platform,
+          state: 'error',
+          error: describe(probe.error),
+          checkedAt: now,
+        });
+      } else {
+        this.probeStates.set(probe.platform, { platform: probe.platform, state: probe.status, checkedAt: now });
       }
     }
 
@@ -234,24 +271,57 @@ export class Announcer {
 
   /** Ссылки на каналы для итогового сообщения — по настроенным площадкам, а не по тем, что были в эфире. */
   private channelLinks(): ChannelLink[] {
-    const { twitch, youtube, vkvideo, vkVideoReplayUrl } = this.config;
-    const links: ChannelLink[] = [];
-    if (twitch) links.push({ label: 'Twitch', url: `https://twitch.tv/${twitch.login}` });
-    if (youtube) {
-      links.push({ label: 'YouTube', url: `https://www.youtube.com/channel/${youtube.channelId}` });
-    }
-    if (vkVideoReplayUrl) links.push({ label: 'VK Video', url: vkVideoReplayUrl });
-    if (vkvideo) links.push({ label: 'VK Live', url: `${VK_LIVE_BASE}/${vkvideo.channel}` });
-    return links;
+    return PLATFORMS.flatMap((platform): ChannelLink[] => {
+      const url = channelUrl(this.config, platform);
+      if (!url) return [];
+      const link = { label: PLATFORM_LABELS[platform], url };
+      if (platform === 'vkvideo' && this.config.vkVideoReplayUrl) {
+        return [{ label: 'VK Video', url: this.config.vkVideoReplayUrl }, link];
+      }
+      return [link];
+    });
   }
 
-  /** Для команды /status. */
-  status(): { startedAt: number; platforms: Platform[] } | null {
+  /** Для команды /status и панели. */
+  status(): BroadcastStatus | null {
     const broadcast = this.store.openBroadcast();
     if (!broadcast) return null;
     return {
       startedAt: broadcast.startedAt,
+      announcedAt: broadcast.announcedAt,
+      chatId: broadcast.chatId,
+      messageId: broadcast.messageId,
       platforms: this.store.liveStreamsOf(broadcast.id).map((stream) => stream.platform),
+    };
+  }
+
+  /** Последняя проверка по каждой настроенной площадке; до первой проверки площадки нет в списке. */
+  platformStates(): PlatformState[] {
+    return this.watchers.flatMap((watcher) => {
+      const state = this.probeStates.get(watcher.platform);
+      return state ? [state] : [];
+    });
+  }
+
+  /**
+   * Оба сообщения так, как они уйдут сейчас: с текущей врезкой и, если эфир идёт,
+   * с настоящими названием и игрой. Ссылки — на каналы, ведь эфира может и не быть.
+   */
+  preview(): { announce: string; finished: string } {
+    const broadcast = this.store.openBroadcast();
+    const source = broadcast ? this.source(broadcast.id) : undefined;
+    const title = source?.title ?? 'Название стрима на Twitch';
+    const game = source ? source.game : 'Игра на Twitch';
+    const links = this.channelLinks();
+
+    return {
+      announce: renderAnnounce({ title, game, customText: this.store.announceText(), links }),
+      finished: renderFinished({
+        title,
+        game,
+        durationMs: broadcast ? this.now() - broadcast.startedAt : (2 * 60 + 47) * 60_000,
+        links,
+      }),
     };
   }
 }

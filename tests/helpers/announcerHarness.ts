@@ -68,6 +68,15 @@ export function fakeTelegram() {
     editMessageText: vi.fn(async (_messageId: number, _text: string) => undefined),
     getUpdates: vi.fn(async () => []),
     sendTo: vi.fn(async () => undefined),
+    uploadPhoto: vi.fn(async (_chatId: number | string, _data: Uint8Array, _type: string, _caption?: string) => ({
+      message_id: 200,
+      chat: { id: 42 },
+      photo: [
+        { file_id: 'uploaded-small', width: 90, height: 51 },
+        { file_id: 'uploaded-large', width: 1280, height: 720 },
+      ],
+    })),
+    downloadFile: vi.fn(async (_fileId: string) => new Uint8Array([0xff, 0xd8, 0xff])),
   };
 }
 

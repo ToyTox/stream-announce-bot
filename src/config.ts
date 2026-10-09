@@ -47,7 +47,7 @@ export class ConfigError extends Error {
   }
 }
 
-type Env = Record<string, string | undefined>;
+export type Env = Record<string, string | undefined>;
 
 function str(env: Env, name: string): string | undefined {
   const value = env[name]?.trim();
@@ -152,4 +152,21 @@ export function loadConfig(env: Env = process.env): Config {
   }
 
   return config;
+}
+
+export interface WebConfig {
+  enabled: boolean;
+  port: number;
+}
+
+/**
+ * Панель настраивается отдельно от бота: она должна подняться, даже если остальной
+ * конфиг невалиден — как раз чтобы его исправить.
+ */
+export function loadWebConfig(env: Env = process.env): WebConfig {
+  const port = int(env, 'WEB_PORT', 3210);
+  if (port < 1 || port > 65535) {
+    throw new ConfigError(`WEB_PORT должен быть от 1 до 65535, получено ${port}`);
+  }
+  return { enabled: bool(env, 'WEB_ENABLED', true), port };
 }

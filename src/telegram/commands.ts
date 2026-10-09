@@ -31,24 +31,34 @@ const HELP = [
 
 export class CommandListener {
   private running = false;
+  private abort = new AbortController();
+  private loopDone: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: CommandListenerDeps) {}
 
   start(): void {
     if (this.running) return;
     this.running = true;
-    void this.loop();
+    this.abort = new AbortController();
+    this.loopDone = this.loop();
   }
 
-  stop(): void {
+  /** Обрывает висящий getUpdates и ждёт выхода из цикла — после этого базу можно закрывать. */
+  async stop(): Promise<void> {
     this.running = false;
+    this.abort.abort();
+    await this.loopDone;
   }
 
   private async loop(): Promise<void> {
     while (this.running) {
       try {
         const offset = this.deps.store.updatesOffset() ?? undefined;
-        const updates = await this.deps.telegram.getUpdates(offset, POLL_TIMEOUT_SECONDS);
+        const updates = await this.deps.telegram.getUpdates(
+          offset,
+          POLL_TIMEOUT_SECONDS,
+          this.abort.signal
+        );
         for (const update of updates) {
           this.deps.store.setUpdatesOffset(update.update_id + 1);
           await this.handle(update);
@@ -64,9 +74,20 @@ export class CommandListener {
           '⚠️  Опрос команд сорвался, повтор через 5 с:',
           error instanceof Error ? error.message : error
         );
-        await new Promise((resolve) => setTimeout(resolve, ERROR_BACKOFF_MS));
+        await this.pause(ERROR_BACKOFF_MS);
       }
     }
+  }
+
+  /** Пауза, которую прерывает stop(): иначе выключение ждало бы её до конца. */
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      this.abort.signal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   /** Апдейты не от владельца игнорируются молча — бот может состоять в общих чатах. */

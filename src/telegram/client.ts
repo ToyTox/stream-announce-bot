@@ -67,7 +67,7 @@ export class TelegramClient {
   private readonly http: AxiosInstance;
 
   constructor(
-    botToken: string,
+    private readonly botToken: string,
     private readonly chatId: string,
     private readonly topicId?: number
   ) {
@@ -140,8 +140,16 @@ export class TelegramClient {
     });
   }
 
-  /** Long polling: таймаут запроса даём с запасом над timeout самого getUpdates. */
-  async getUpdates(offset: number | undefined, timeoutSeconds: number): Promise<TelegramUpdate[]> {
+  /**
+   * Long polling: таймаут запроса даём с запасом над timeout самого getUpdates.
+   * signal нужен при перезапуске бота из панели: иначе старый запрос висит до 30 с,
+   * а новый получает от Telegram 409 Conflict.
+   */
+  async getUpdates(
+    offset: number | undefined,
+    timeoutSeconds: number,
+    signal?: AbortSignal
+  ): Promise<TelegramUpdate[]> {
     const response = await this.http.post<{ ok: boolean; result: TelegramUpdate[] }>(
       'getUpdates',
       {
@@ -149,9 +157,43 @@ export class TelegramClient {
         timeout: timeoutSeconds,
         allowed_updates: ['message'],
       },
-      { timeout: (timeoutSeconds + 10) * 1000 }
+      { timeout: (timeoutSeconds + 10) * 1000, signal }
     );
     return response.data.result;
+  }
+
+  /**
+   * Загрузка картинки с диска в чат (из панели — вам в личку). Нужна ради file_id:
+   * дальше анонсы шлют фото по нему, как будто вы прислали его боту сами.
+   */
+  async uploadPhoto(
+    chatId: number | string,
+    data: Uint8Array,
+    contentType: string,
+    caption?: string
+  ): Promise<TelegramMessage> {
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    if (caption) form.append('caption', caption);
+    // Копия в обычный ArrayBuffer: Blob не принимает представления над SharedArrayBuffer.
+    form.append('photo', new Blob([new Uint8Array(data)], { type: contentType }), 'preview');
+    try {
+      const response = await this.http.post<{ ok: boolean; result: TelegramMessage }>('sendPhoto', form);
+      return response.data.result;
+    } catch (error) {
+      throw toTelegramError(error, 'sendPhoto');
+    }
+  }
+
+  /** Скачивает файл по file_id — панели, чтобы показать текущее превью. */
+  async downloadFile(fileId: string): Promise<Uint8Array> {
+    const file = await this.call<{ file_path?: string }>('getFile', { file_id: fileId });
+    if (!file.file_path) throw new TelegramError('upstream', 'getFile: Telegram не вернул путь к файлу');
+    const response = await axios.get<ArrayBuffer>(
+      `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`,
+      { responseType: 'arraybuffer', timeout: REQUEST_TIMEOUT }
+    );
+    return new Uint8Array(response.data);
   }
 
   async sendTo(userId: number, text: string): Promise<void> {
