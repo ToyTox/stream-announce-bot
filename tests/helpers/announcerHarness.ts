@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
-import { Announcer } from '../../src/announcer.js';
+import { Announcer, type AnnouncerEvent } from '../../src/announcer.js';
 import type { Config } from '../../src/config.js';
 import { openDb, type Db } from '../../src/db.js';
 import { Store } from '../../src/store.js';
@@ -108,7 +108,10 @@ export interface Harness {
   cleanup(): void;
 }
 
-export function createHarness(configOverrides: Partial<Config> = {}): Harness {
+export function createHarness(
+  configOverrides: Partial<Config> = {},
+  onEvent?: (event: AnnouncerEvent) => void
+): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'stream-bot-'));
   const dbPath = join(dir, 'test.db');
   const db = openDb(dbPath);
@@ -131,6 +134,7 @@ export function createHarness(configOverrides: Partial<Config> = {}): Harness {
       telegram: telegram as unknown as TelegramClient,
       config,
       now: clock.now,
+      onEvent,
     });
 
   return {

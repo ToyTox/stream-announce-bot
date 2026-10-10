@@ -7,3 +7,4 @@ data/
 *.db-wal
 coverage/
 .DS_Store
+dist-desktop/

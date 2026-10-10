@@ -234,6 +234,14 @@
       </div>
       <p class="muted small" style="margin-bottom: 0">Настройки сохраняются в файл .env. Повторного анонса после перезапуска не будет.</p>
     </form>
+    <div class="card">
+      <div class="row">
+        <button class="btn" type="button" id="import-env">Импортировать .env…</button>
+        <input type="file" id="import-file" hidden>
+        <span id="import-result" class="result"></span>
+      </div>
+      <p class="muted small" style="margin-bottom: 0">Файл .env целиком заменит текущие настройки, бот перезапустится. Если в файле ошибка, ничего не изменится.</p>
+    </div>
   </section>
 
   <section id="tab-log" hidden>
@@ -600,6 +608,33 @@
     });
   });
 
+  $('import-env').addEventListener('click', () => $('import-file').click());
+  $('import-file').addEventListener('change', async () => {
+    const file = $('import-file').files[0];
+    $('import-file').value = '';
+    if (!file) return;
+    await withButton($('import-env'), async () => {
+      try {
+        const content = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+          reader.readAsText(file);
+        });
+        const result = await api('POST', '/api/import-env', { content });
+        if (result.configError) {
+          showResult($('import-result'), false, `Импортировано, но бот не запустился: ${result.configError}`);
+        } else {
+          showResult($('import-result'), true, 'Импортировано, бот перезапущен');
+        }
+        await loadSettings();
+        await loadStatus();
+      } catch (error) {
+        showResult($('import-result'), false, error.message);
+      }
+    });
+  });
+
   // ---------- Лог ----------
   let logSeq = 0;
   async function loadLog() {
@@ -632,6 +667,9 @@
 
   let initialTab = 'status';
   try { initialTab = localStorage.getItem('tab') || 'status'; } catch {}
+  // #settings в адресе (десктопное приложение при первом запуске) важнее запомненной вкладки.
+  const hashTab = location.hash.slice(1);
+  if (hashTab) initialTab = hashTab;
   loadStatus();
   selectTab(['status', 'message', 'settings', 'log'].includes(initialTab) ? initialTab : 'status');
 </script>

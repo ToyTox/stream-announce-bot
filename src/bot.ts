@@ -1,4 +1,4 @@
-import { Announcer } from './announcer.js';
+import { Announcer, type AnnouncerEvent } from './announcer.js';
 import { ConfigError, loadConfig, type Config, type Env } from './config.js';
 import { openDb } from './db.js';
 import { Store } from './store.js';
@@ -30,7 +30,7 @@ function buildWatchers(config: Config): BaseWatcher[] {
   return watchers;
 }
 
-export function startBot(config: Config): Bot {
+export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => void): Bot {
   const db = openDb(config.databasePath);
   const store = new Store(db);
   const telegram = new TelegramClient(
@@ -39,7 +39,7 @@ export function startBot(config: Config): Bot {
     config.telegram.topicId
   );
   const watchers = buildWatchers(config);
-  const announcer = new Announcer({ store, watchers, telegram, config });
+  const announcer = new Announcer({ store, watchers, telegram, config, onEvent });
 
   console.log(
     `👀 Слежу за площадками: ${watchers.map((watcher) => PLATFORM_LABELS[watcher.platform]).join(', ')}`
@@ -92,7 +92,7 @@ export function startBot(config: Config): Bot {
   };
 }
 
-export type BotFactory = (config: Config) => Bot;
+export type BotFactory = (config: Config, onEvent?: (event: AnnouncerEvent) => void) => Bot;
 
 /**
  * Держит текущего бота и умеет пересобрать его с новым конфигом. Если конфиг
@@ -102,11 +102,14 @@ export class Runtime {
   bot: Bot | null = null;
   configError: string | null = null;
 
-  constructor(private readonly factory: BotFactory = startBot) {}
+  constructor(
+    private readonly factory: BotFactory = startBot,
+    private readonly onEvent?: (event: AnnouncerEvent) => void
+  ) {}
 
   start(env: Env): void {
     try {
-      this.bot = this.factory(loadConfig(env));
+      this.bot = this.factory(loadConfig(env), this.onEvent);
       this.configError = null;
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;

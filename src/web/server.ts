@@ -1,6 +1,9 @@
+import { parse as parseEnv } from 'dotenv';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { channelUrl } from '../announcer.js';
 import type { Bot } from '../bot.js';
@@ -8,7 +11,7 @@ import { ConfigError, loadConfig, type Env } from '../config.js';
 import { recentLogs } from '../log.js';
 import { TelegramError } from '../telegram/client.js';
 import { PLATFORMS, PLATFORM_LABELS } from '../types.js';
-import { writeEnvFile } from './envFile.js';
+import { replaceEnvFile, writeEnvFile } from './envFile.js';
 import { settingsChanges, settingsView } from './settings.js';
 
 /**
@@ -27,14 +30,29 @@ export interface PanelDeps {
   /** Живой env процесса: после сохранения настроек обновляется вместе с .env. */
   env: Env;
   envPath: string;
+  /** Значения, которых нет в .env, но нужны боту (например, путь к базе в десктопном приложении). */
+  defaults?: Env;
 }
 
 export interface Panel {
   server: Server;
+  /** Реальный порт после listen: при порте 0 его выбирает система. */
+  port: number;
   close(): Promise<void>;
 }
 
-const INDEX_HTML = fileURLToPath(new URL('../../web/index.html', import.meta.url));
+/** Ищем web/index.html вверх по дереву: код может лежать в dist/ или в dist-desktop/src/. */
+function findIndexHtml(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let depth = 0; depth < 5; depth++) {
+    const candidate = join(dir, 'web', 'index.html');
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
+  }
+  throw new Error('Не найден web/index.html');
+}
+
+const INDEX_HTML = findIndexHtml();
 const JSON_LIMIT = 64 * 1024;
 /** Лимит Telegram на фото. */
 const IMAGE_LIMIT = 10 * 1024 * 1024;
@@ -113,7 +131,7 @@ function errorText(error: unknown): string {
 }
 
 export function createPanel(deps: PanelDeps): Panel {
-  const { runtime, env, envPath } = deps;
+  const { runtime, env, envPath, defaults = {} } = deps;
   /** Последнее скачанное превью: Telegram отдаёт файл по file_id, качать его на каждый показ незачем. */
   let imageCache: { fileId: string; data: Uint8Array } | null = null;
 
@@ -270,6 +288,32 @@ export function createPanel(deps: PanelDeps): Panel {
         return sendJson(res, 200, { ok: true, changed, configError: runtime.configError });
       }
 
+      case 'POST /api/import-env': {
+        const body = await readJson(req);
+        if (typeof body.content !== 'string' || body.content.trim() === '') {
+          throw new HttpError(400, 'Файл пустой');
+        }
+        const imported = { ...defaults, ...parseEnv(body.content) };
+
+        // Как и при сохранении настроек: невалидный файл не должен затереть рабочий .env.
+        try {
+          loadConfig(imported);
+        } catch (error) {
+          if (error instanceof ConfigError) throw new HttpError(400, error.message);
+          throw error;
+        }
+
+        // Ключи прежнего .env, которых нет в новом, из живого env убираем: иначе они «прилипнут».
+        if (existsSync(envPath)) {
+          for (const key of Object.keys(parseEnv(readFileSync(envPath, 'utf8')))) delete env[key];
+        }
+        replaceEnvFile(envPath, body.content);
+        Object.assign(env, imported);
+        console.log('📥 Настройки импортированы из .env');
+        await runtime.restart(env);
+        return sendJson(res, 200, { ok: true, configError: runtime.configError });
+      }
+
       case 'GET /api/logs': {
         const after = Number(url.searchParams.get('after') ?? 0) || 0;
         return sendJson(res, 200, { lines: recentLogs(after) });
@@ -295,25 +339,59 @@ export function createPanel(deps: PanelDeps): Panel {
     })();
   });
 
-  return {
+  const panel: Panel = {
     server,
+    port: 0,
     close: () =>
       new Promise((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();
       }),
   };
+  return panel;
 }
 
-/** Поднимает панель; занятый порт не роняет бота — просто панели не будет. */
-export function startPanel(deps: PanelDeps, port: number): Panel {
-  const panel = createPanel(deps);
-  panel.server.on('error', (error: NodeJS.ErrnoException) => {
-    const reason = error.code === 'EADDRINUSE' ? `порт ${port} занят — задайте другой в WEB_PORT` : error.message;
-    console.error(`❌ Панель не запустилась: ${reason}`);
+function listen(panel: Panel, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    panel.server.once('error', onError);
+    panel.server.listen(port, '127.0.0.1', () => {
+      panel.server.off('error', onError);
+      panel.port = (panel.server.address() as AddressInfo).port;
+      resolve();
+    });
   });
-  panel.server.listen(port, '127.0.0.1', () => {
-    console.log(`🌐 Панель: http://localhost:${port}`);
-  });
+}
+
+/**
+ * Поднимает панель и возвращает её с реальным портом. Занятый порт не роняет бота:
+ * без fallback панели просто не будет (undefined), с fallback берём любой свободный.
+ */
+export async function startPanel(
+  deps: PanelDeps,
+  port: number,
+  options: { fallbackPort?: boolean } = {}
+): Promise<Panel | undefined> {
+  let panel = createPanel(deps);
+  try {
+    await listen(panel, port);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EADDRINUSE' && options.fallbackPort && port !== 0) {
+      console.warn(`⚠️  Порт ${port} занят, беру свободный`);
+      panel = createPanel(deps);
+      try {
+        await listen(panel, 0);
+      } catch (retry) {
+        console.error(`❌ Панель не запустилась: ${errorText(retry)}`);
+        return undefined;
+      }
+    } else {
+      const reason = code === 'EADDRINUSE' ? `порт ${port} занят — задайте другой в WEB_PORT` : errorText(error);
+      console.error(`❌ Панель не запустилась: ${reason}`);
+      return undefined;
+    }
+  }
+  console.log(`🌐 Панель: http://localhost:${panel.port}`);
   return panel;
 }

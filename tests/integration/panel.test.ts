@@ -193,6 +193,46 @@ describe('панель: настройки', () => {
   });
 });
 
+describe('панель: импорт .env', () => {
+  const imported = '# Свой файл\nTELEGRAM_BOT_TOKEN=999:NEW\nTELEGRAM_CHAT_ID=-100777\nTWITCH_LOGIN=me\nTWITCH_CLIENT_ID=id\nTWITCH_CLIENT_SECRET=secret\n';
+
+  it('валидный файл заменяет .env целиком и перезапускает бота', async () => {
+    const reply = await call('POST', '/api/import-env', { body: { content: imported } });
+
+    expect(reply.status).toBe(200);
+    expect(readFileSync(envPath, 'utf8')).toBe(imported);
+    expect(env.TELEGRAM_CHAT_ID).toBe('-100777');
+    // Ключ из старого .env, которого нет в новом, не остаётся в живом env.
+    expect(env.VKVIDEO_CHANNEL).toBeUndefined();
+    expect(runtime.restart).toHaveBeenCalledWith(env);
+  });
+
+  it('невалидный файл даёт 400 и не трогает .env', async () => {
+    const before = readFileSync(envPath, 'utf8');
+
+    const reply = await call('POST', '/api/import-env', { body: { content: 'TELEGRAM_BOT_TOKEN=1\n' } });
+
+    expect(reply.status).toBe(400);
+    expect(reply.json.error).toContain('TELEGRAM_CHAT_ID');
+    expect(readFileSync(envPath, 'utf8')).toBe(before);
+    expect(env.TELEGRAM_BOT_TOKEN).toBe('7712345678:AAHkSECRETxYz');
+    expect(runtime.restart).not.toHaveBeenCalled();
+  });
+
+  it('запрос с чужого сайта отклоняется', async () => {
+    const before = readFileSync(envPath, 'utf8');
+
+    const reply = await call('POST', '/api/import-env', {
+      body: { content: imported },
+      headers: { origin: 'https://evil.example' },
+    });
+
+    expect(reply.status).toBe(403);
+    expect(readFileSync(envPath, 'utf8')).toBe(before);
+    expect(runtime.restart).not.toHaveBeenCalled();
+  });
+});
+
 describe('панель: защита', () => {
   it('запрос с чужого сайта отклоняется', async () => {
     const reply = await call('PUT', '/api/text', {

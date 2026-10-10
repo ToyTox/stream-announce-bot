@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "Анонс старта стримов (Twitch, YouTube, VK Video) в Telegram-группу одним сообщением",
   "type": "module",
-  "main": "dist/index.js",
+  "productName": "Анонсы стримов",
+  "main": "dist-desktop/desktop/main.js",
   "engines": {
     "node": ">=22"
   },
@@ -12,16 +13,22 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "build:desktop": "tsc -p tsconfig.desktop.json",
+    "predesktop": "npm run build:desktop",
+    "desktop": "node scripts/desktop.mjs",
+    "icons": "node scripts/make-icons.mjs"
   },
   "dependencies": {
     "axios": "^1.7.9",
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.4.7"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
+    "@electron/rebuild": "^4.2.1",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.10.5",
+    "electron": "^44.7.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.2"

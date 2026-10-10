@@ -38,3 +38,10 @@ export function writeEnvFile(path: string, values: Record<string, string>): void
   writeFileSync(tmp, updateEnvContent(current, values), { mode: 0o600 });
   renameSync(tmp, path);
 }
+
+/** Импорт: файл заменяется целиком, старые комментарии и ключи не сохраняются. */
+export function replaceEnvFile(path: string, content: string): void {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, content.endsWith('\n') ? content : `${content}\n`, { mode: 0o600 });
+  renameSync(tmp, path);
+}

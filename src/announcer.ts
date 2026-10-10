@@ -12,6 +12,12 @@ import { CHANNEL_BASE as VK_LIVE_BASE } from './watchers/vkvideo.js';
  * платформы, которые действительно в эфире.
  */
 
+/** События для оболочек вроде десктопного приложения; на логику анонсов не влияют. */
+export type AnnouncerEvent =
+  | { type: 'announced'; platforms: string[] }
+  | { type: 'finished'; durationMs: number }
+  | { type: 'announce_failed'; error: string };
+
 export interface AnnouncerDeps {
   store: Store;
   watchers: BaseWatcher[];
@@ -19,6 +25,7 @@ export interface AnnouncerDeps {
   config: Config;
   /** Подменяется в тестах, чтобы гонять grace-периоды без ожидания. */
   now?: () => number;
+  onEvent?: (event: AnnouncerEvent) => void;
 }
 
 /** Итог последней проверки площадки — для панели. */
@@ -70,6 +77,7 @@ export class Announcer {
   private readonly telegram: TelegramClient;
   private readonly config: Config;
   private readonly now: () => number;
+  private readonly onEvent?: (event: AnnouncerEvent) => void;
   private readonly probeStates = new Map<Platform, PlatformState>();
 
   constructor(deps: AnnouncerDeps) {
@@ -78,6 +86,16 @@ export class Announcer {
     this.telegram = deps.telegram;
     this.config = deps.config;
     this.now = deps.now ?? (() => Date.now());
+    this.onEvent = deps.onEvent;
+  }
+
+  /** Подписчик не должен ломать проверку эфира. */
+  private emit(event: AnnouncerEvent): void {
+    try {
+      this.onEvent?.(event);
+    } catch (error) {
+      console.error('❌ Ошибка в обработчике событий:', error instanceof Error ? error.message : error);
+    }
   }
 
   async tick(): Promise<void> {
@@ -200,6 +218,7 @@ export class Announcer {
       console.log('🧪 DRY_RUN, сообщение не отправлено:\n' + text);
       this.store.markAnnounced(broadcastId, now, this.config.telegram.chatId, null, customText);
       this.store.clearAnnounceText();
+      this.emit({ type: 'announced', platforms: this.store.liveStreamsOf(broadcastId).map((stream) => PLATFORM_LABELS[stream.platform]) });
       return;
     }
 
@@ -217,10 +236,12 @@ export class Announcer {
       );
       this.store.clearAnnounceText();
       console.log(`✅ Анонс отправлен: ${links.map((link) => link.label).join(', ')}`);
+      this.emit({ type: 'announced', platforms: this.store.liveStreamsOf(broadcastId).map((stream) => PLATFORM_LABELS[stream.platform]) });
     } catch (error) {
       // Анонс не отмечен отправленным — попробуем в следующем тике.
       const message = error instanceof TelegramError ? error.message : String(error);
       console.error('❌ Не удалось отправить анонс:', message);
+      this.emit({ type: 'announce_failed', error: message });
       if (error instanceof TelegramError && !error.retriable) throw error;
     }
   }
@@ -247,22 +268,25 @@ export class Announcer {
     // Итог шлём только к эфиру, о котором объявляли. Сам анонс не трогаем.
     if (!this.config.announceEnd || !broadcast || broadcast.announcedAt === null) return;
 
+    // Без хвоста offlineGraceMs: эфир кончился, когда площадки замолчали, а не когда мы это признали.
+    const durationMs = broadcast.lastLiveAt - broadcast.startedAt;
     const text = renderFinished({
       title: source?.title ?? 'Трансляция',
       game: source?.game,
-      // Без хвоста offlineGraceMs: эфир кончился, когда площадки замолчали, а не когда мы это признали.
-      durationMs: broadcast.lastLiveAt - broadcast.startedAt,
+      durationMs,
       links: this.channelLinks(),
     });
 
     if (this.config.dryRun) {
       console.log('🧪 DRY_RUN, итог эфира не отправлен:\n' + text);
+      this.emit({ type: 'finished', durationMs });
       return;
     }
 
     try {
       await this.telegram.sendMessage(text);
       console.log('✅ Итог эфира отправлен');
+      this.emit({ type: 'finished', durationMs });
     } catch (error) {
       const message = error instanceof TelegramError ? error.message : String(error);
       console.error('❌ Не удалось отправить итог эфира:', message);

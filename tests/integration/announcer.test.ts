@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AnnouncerEvent } from '../../src/announcer.js';
+import { TelegramError } from '../../src/telegram/client.js';
 import { createHarness, liveStream, type Harness } from '../helpers/announcerHarness.js';
 
 /**
@@ -257,5 +259,40 @@ describe('Announcer', () => {
 
     expect(harness.telegram.sendPhoto).not.toHaveBeenCalled();
     expect(harness.store.openBroadcast()?.announcedAt).not.toBeNull();
+  });
+
+  it('onEvent: сообщает об анонсе и об окончании эфира с длительностью', async () => {
+    const events: AnnouncerEvent[] = [];
+    harness.cleanup();
+    harness = createHarness({}, (event) => events.push(event));
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    await run(3);
+    expect(events).toEqual([{ type: 'announced', platforms: ['Twitch'] }]);
+
+    harness.watchers.twitch.state = null;
+    await run(5);
+
+    expect(events).toEqual([
+      { type: 'announced', platforms: ['Twitch'] },
+      { type: 'finished', durationMs: 2 * MINUTE },
+    ]);
+  });
+
+  it('onEvent: сбой отправки анонса — announce_failed, а ошибка подписчика проверку не ломает', async () => {
+    const events: AnnouncerEvent[] = [];
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    harness.cleanup();
+    harness = createHarness({}, (event) => {
+      events.push(event);
+      throw new Error('boom');
+    });
+    harness.telegram.sendPhoto.mockRejectedValue(new TelegramError('upstream', 'Telegram недоступен'));
+    harness.telegram.sendMessage.mockRejectedValue(new TelegramError('upstream', 'Telegram недоступен'));
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    await expect(run(3)).resolves.toBeUndefined();
+
+    expect(events[0]).toEqual({ type: 'announce_failed', error: 'Telegram недоступен' });
+    expect(harness.store.openBroadcast()?.announcedAt).toBeNull();
   });
 });
