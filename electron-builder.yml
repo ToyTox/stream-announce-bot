@@ -36,7 +36,8 @@ win:
       arch: x64
 nsis:
   oneClick: false
-  perMachine: false
+  # Для всех пользователей, с запросом UAC: иначе установка в Program Files падает с ошибкой записи файла.
+  perMachine: true
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true

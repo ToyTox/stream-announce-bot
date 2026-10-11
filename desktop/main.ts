@@ -77,8 +77,9 @@ function saveSettings(): void {
 
 function applySettings(): void {
   // Автозапуск только для установленного приложения: в разработке система зарегистрировала бы голый Electron.
-  // Системную настройку трогаем только при изменении.
-  if (app.isPackaged && app.getLoginItemSettings().openAtLogin !== settings.launchAtLogin) {
+  // Включённый автозапуск перезаписываем всегда: после переезда exe (например, в Program Files) запись должна вести на текущий файл.
+  // Выключенный снимаем только если он был включён.
+  if (app.isPackaged && (settings.launchAtLogin || app.getLoginItemSettings().openAtLogin)) {
     // openAsHidden есть не во всех версиях типов Electron, но старым macOS он нужен.
     app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, openAsHidden: true } as Electron.Settings);
   }
