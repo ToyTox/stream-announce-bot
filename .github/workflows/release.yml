@@ -1,0 +1,99 @@
+# Выпуск: тег v* (npm version minor && git push --follow-tags) → тесты → сборка Mac/Windows → GitHub Release.
+# workflow_dispatch — пробная сборка без релиза: файлы остаются в артефактах запуска.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mac-arm64
+            os: macos-latest
+            args: --mac --arm64
+          # better-sqlite3 13 везёт бинарники всех платформ в самом пакете, поэтому
+          # Intel-версия собирается на том же arm-раннере: нужный x64-файл уже в node_modules.
+          - name: mac-x64
+            os: macos-latest
+            args: --mac --x64
+          - name: win-x64
+            os: windows-latest
+            args: --win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:desktop
+      - name: Сборка установщика
+        run: npx electron-builder ${{ matrix.args }}
+        env:
+          # Платной подписи нет: Mac подписывается ad-hoc (см. electron-builder.yml).
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Проверка бинарника базы (Intel)
+        if: matrix.name == 'mac-x64'
+        run: |
+          set -e
+          found=$(find release -path '*app.asar.unpacked*' -name 'darwin-x64.node' | head -n 1)
+          test -n "$found"
+          file "$found"
+          file "$found" | grep -q x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            release/*.dmg
+            release/*.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Версия в теге совпадает с package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "Тег $GITHUB_REF_NAME не совпадает с версией в package.json ($pkg)" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: ls -R artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.dmg
+            artifacts/*.exe
+          generate_release_notes: true

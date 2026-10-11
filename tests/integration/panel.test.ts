@@ -76,7 +76,7 @@ function startPanel(configOverrides: Parameters<typeof testConfig>[0] = {}): Pro
   writeFileSync(envPath, '# Токен от BotFather\nTELEGRAM_BOT_TOKEN=7712345678:AAHkSECRETxYz\nTELEGRAM_CHAT_ID=-100123\nVKVIDEO_CHANNEL=me\n');
   env = { TELEGRAM_BOT_TOKEN: '7712345678:AAHkSECRETxYz', TELEGRAM_CHAT_ID: '-100123', VKVIDEO_CHANNEL: 'me' };
 
-  panel = createPanel({ runtime, env, envPath });
+  panel = createPanel({ runtime, env, envPath, version: '1.2.3' });
   return new Promise((resolve) => {
     panel.server.listen(0, '127.0.0.1', () => {
       port = (panel.server.address() as AddressInfo).port;
@@ -104,6 +104,13 @@ describe('панель: статус и сообщение', () => {
 
     expect(reply.status).toBe(200);
     expect(reply.json).toContain('<title>Анонсы стримов</title>');
+  });
+
+  it('статус отдаёт версию приложения', async () => {
+    const reply = await call('GET', '/api/status');
+
+    expect(reply.status).toBe(200);
+    expect(reply.json.version).toBe('1.2.3');
   });
 
   it('статус показывает настроенные площадки и результат последней проверки', async () => {

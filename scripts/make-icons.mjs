@@ -1,4 +1,4 @@
-// Рисует иконки трея в desktop/assets/. Запуск: node scripts/make-icons.mjs
+// Рисует иконки трея в desktop/assets/ и иконку приложения build/icon.png. Запуск: node scripts/make-icons.mjs
 // Готовые PNG лежат в репозитории, скрипт нужен только чтобы их перерисовать.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
@@ -96,18 +96,24 @@ const appShape = (x, y) => {
   const qy = Math.abs(y - 0.5) - 0.32;
   return Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) <= 0.14;
 };
-const size = 512;
-const app = Buffer.alloc(size * size * 4);
-for (let py = 0; py < size; py++) {
-  for (let px = 0; px < size; px++) {
-    const x = (px + 0.5) / size;
-    const y = (py + 0.5) / size;
-    const o = (py * size + px) * 4;
-    if (!appShape(x, y)) continue;
-    const d = dist(x, y);
-    const red = d <= 0.14 || (d > 0.22 && d <= 0.27) || (d > 0.33 && d <= 0.38);
-    app.set(red ? [229, 50, 45, 255] : [30, 32, 38, 255], o);
+function renderApp(size) {
+  const app = Buffer.alloc(size * size * 4);
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
+      const x = (px + 0.5) / size;
+      const y = (py + 0.5) / size;
+      const o = (py * size + px) * 4;
+      if (!appShape(x, y)) continue;
+      const d = dist(x, y);
+      const red = d <= 0.14 || (d > 0.22 && d <= 0.27) || (d > 0.33 && d <= 0.38);
+      app.set(red ? [229, 50, 45, 255] : [30, 32, 38, 255], o);
+    }
   }
+  return png(size, app);
 }
-writeFileSync(new URL('icon.png', OUT), png(size, app));
-console.log('Иконки записаны в desktop/assets/');
+writeFileSync(new URL('icon.png', OUT), renderApp(512));
+// Исходник для electron-builder (.icns/.ico он делает сам): для Mac нужно не меньше 1024.
+const BUILD = new URL('../build/', import.meta.url);
+mkdirSync(BUILD, { recursive: true });
+writeFileSync(new URL('icon.png', BUILD), renderApp(1024));
+console.log('Иконки записаны в desktop/assets/ и build/icon.png');

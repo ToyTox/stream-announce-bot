@@ -32,6 +32,8 @@ export interface PanelDeps {
   envPath: string;
   /** Значения, которых нет в .env, но нужны боту (например, путь к базе в десктопном приложении). */
   defaults?: Env;
+  /** Версия приложения для шапки панели. */
+  version?: string;
 }
 
 export interface Panel {
@@ -131,17 +133,18 @@ function errorText(error: unknown): string {
 }
 
 export function createPanel(deps: PanelDeps): Panel {
-  const { runtime, env, envPath, defaults = {} } = deps;
+  const { runtime, env, envPath, defaults = {}, version = '' } = deps;
   /** Последнее скачанное превью: Telegram отдаёт файл по file_id, качать его на каждый показ незачем. */
   let imageCache: { fileId: string; data: Uint8Array } | null = null;
 
   function status() {
     const bot = runtime.bot;
-    if (!bot) return { running: false, configError: runtime.configError };
+    if (!bot) return { version, running: false, configError: runtime.configError };
 
     const broadcast = bot.announcer.status();
     const states = new Map(bot.announcer.platformStates().map((state) => [state.platform, state]));
     return {
+      version,
       running: true,
       configError: null,
       dryRun: bot.config.dryRun,

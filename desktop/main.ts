@@ -17,6 +17,7 @@ import { formatDuration } from '../src/announceTemplate.js';
 import { startApp, type App } from '../src/app.js';
 import { captureConsole } from '../src/log.js';
 import { PLATFORM_LABELS } from '../src/types.js';
+import { startUpdateChecks, type UpdateInfo } from './updates.js';
 
 /**
  * Десктопная оболочка: бот и панель работают в фоне, в трее иконка со статусом,
@@ -27,8 +28,12 @@ const APP_NAME = 'Анонсы стримов';
 const REFRESH_MS = 5000;
 const ASSETS = join(app.getAppPath(), 'desktop', 'assets');
 const isMac = process.platform === 'darwin';
+const isWindows = process.platform === 'win32';
+/** Совпадает с appId в electron-builder.yml: Windows показывает уведомления только приложению с AppUserModelId. */
+const APP_ID = 'ru.toytox.stream-announce';
 
 app.setName(APP_NAME);
+if (isWindows) app.setAppUserModelId(APP_ID);
 // Для проверок и разработки: отдельная папка данных, чтобы не трогать настоящие .env и базу.
 if (process.env.STREAM_BOT_USER_DATA) app.setPath('userData', process.env.STREAM_BOT_USER_DATA);
 
@@ -48,6 +53,7 @@ let settings: DesktopSettings = { launchAtLogin: false, preventSleep: false };
 let sleepBlockerId: number | undefined;
 let lastTrayKey = '';
 let quitting = false;
+let availableUpdate: UpdateInfo | undefined;
 
 // ---------- Настройки приложения ----------
 
@@ -70,8 +76,9 @@ function saveSettings(): void {
 }
 
 function applySettings(): void {
-  // Трогаем системную настройку только при изменении: в dev-запуске регистрация может быть запрещена.
-  if (app.getLoginItemSettings().openAtLogin !== settings.launchAtLogin) {
+  // Автозапуск только для установленного приложения: в разработке система зарегистрировала бы голый Electron.
+  // Системную настройку трогаем только при изменении.
+  if (app.isPackaged && app.getLoginItemSettings().openAtLogin !== settings.launchAtLogin) {
     // openAsHidden есть не во всех версиях типов Electron, но старым macOS он нужен.
     app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin, openAsHidden: true } as Electron.Settings);
   }
@@ -181,16 +188,18 @@ function buildMenu(status: TrayStatus): Menu {
       click: () => void core?.runtime.bot?.tickNow().then(refreshTray),
     },
     { type: 'separator' },
-    {
-      label: 'Запускать при входе в систему',
-      type: 'checkbox',
-      checked: settings.launchAtLogin,
-      click: (item) => {
-        settings.launchAtLogin = item.checked;
-        saveSettings();
-        applySettings();
-      },
-    },
+    app.isPackaged
+      ? {
+          label: 'Запускать при входе в систему',
+          type: 'checkbox',
+          checked: settings.launchAtLogin,
+          click: (item) => {
+            settings.launchAtLogin = item.checked;
+            saveSettings();
+            applySettings();
+          },
+        }
+      : { label: 'Автозапуск — работает в установленном приложении', enabled: false },
     {
       label: 'Не давать системе засыпать',
       type: 'checkbox',
@@ -202,6 +211,15 @@ function buildMenu(status: TrayStatus): Menu {
       },
     },
     { type: 'separator' },
+    ...(availableUpdate
+      ? [
+          {
+            label: `Доступна версия ${availableUpdate.version} — скачать`,
+            click: () => void shell.openExternal(availableUpdate!.url),
+          } satisfies MenuItemConstructorOptions,
+        ]
+      : []),
+    { label: `Версия ${app.getVersion()}`, enabled: false },
     { label: 'Выйти', click: () => app.quit() },
   ];
   return Menu.buildFromTemplate(template);
@@ -211,7 +229,7 @@ function refreshTray(): void {
   if (!tray) return;
   const status = currentStatus();
   // Меню пересобираем только при изменениях: открытое меню на macOS при замене закрывается.
-  const key = `${status.state}|${status.lines.join('|')}|${Boolean(core?.runtime.bot)}`;
+  const key = `${status.state}|${status.lines.join('|')}|${Boolean(core?.runtime.bot)}|${availableUpdate?.version ?? ''}`;
   if (key === lastTrayKey) return;
   lastTrayKey = key;
   tray.setImage(trayIcon(status.state));
@@ -236,6 +254,16 @@ function notify(event: AnnouncerEvent): void {
   new Notification(text).show();
 }
 
+function onUpdate(info: UpdateInfo): void {
+  const first = availableUpdate?.version !== info.version;
+  availableUpdate = info;
+  refreshTray();
+  // Уведомляем один раз на версию, а не при каждой суточной проверке.
+  if (first && Notification.isSupported()) {
+    new Notification({ title: 'Доступна новая версия', body: `Версия ${info.version} — откройте меню в трее, чтобы скачать` }).show();
+  }
+}
+
 // ---------- Запуск и выход ----------
 
 async function main(): Promise<void> {
@@ -255,6 +283,7 @@ async function main(): Promise<void> {
       // В GUI-приложении окружение процесса — не настройки бота.
       inheritProcessEnv: false,
       defaults: { DATABASE_PATH: join(dataDir, 'bot.db') },
+      version: app.getVersion(),
       onEvent: notify,
     });
   } catch (error) {
@@ -265,9 +294,11 @@ async function main(): Promise<void> {
 
   if (isMac) app.dock?.setIcon(nativeImage.createFromPath(join(ASSETS, 'icon.png')));
   tray = new Tray(trayIcon('idle'));
-  if (!isMac) tray.on('click', () => showWindow());
+  // На macOS клик открывает меню; на Windows меню по правому клику, а левый открывает окно.
+  if (isWindows) tray.on('click', () => showWindow());
   refreshTray();
   setInterval(refreshTray, REFRESH_MS);
+  startUpdateChecks(app.getVersion(), onUpdate);
 
   // Без настроек или с ошибкой в них сразу ведём на вкладку «Настройки»; иначе живём тихо в трее.
   if (firstRun || !core.runtime.bot) showWindow('#settings');

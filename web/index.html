@@ -56,6 +56,7 @@
     padding: 16px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
   }
   header h1 { font-size: 18px; margin: 0; }
+  .version { font-size: 13px; color: var(--muted); }
   .pill { font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
   .pill.ok { color: var(--ok); }
   .pill.warn { color: var(--warn); }
@@ -152,6 +153,7 @@
 <body>
 <header>
   <h1>Анонсы стримов</h1>
+  <span id="version" class="version"></span>
   <span id="bot-pill" class="pill">…</span>
   <nav role="tablist">
     <button role="tab" data-tab="status" aria-selected="true">Статус</button>
@@ -335,6 +337,7 @@
 
   function renderStatus(status) {
     lastStatus = status;
+    if (status.version) $('version').textContent = `v${status.version}`;
     const pill = $('bot-pill');
     const banner = $('config-banner');
     if (!status.running) {

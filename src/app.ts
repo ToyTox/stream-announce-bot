@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { AnnouncerEvent } from './announcer.js';
 import { Runtime, type BotFactory } from './bot.js';
 import { ConfigError, loadWebConfig, type Env } from './config.js';
+import { packageVersion } from './version.js';
 import { startPanel, type Panel } from './web/server.js';
 
 /**
@@ -23,6 +24,8 @@ export interface AppOptions {
   defaults?: Env;
   /** Подмешивать ли переменные окружения процесса; они важнее .env, как у dotenv. */
   inheritProcessEnv?: boolean;
+  /** Версия для панели; по умолчанию из package.json (в десктопе — app.getVersion()). */
+  version?: string;
   onEvent?: (event: AnnouncerEvent) => void;
   /** Подменяется в тестах, чтобы не ходить в сеть. */
   botFactory?: BotFactory;
@@ -59,7 +62,7 @@ export async function startApp(options: AppOptions): Promise<App> {
     const web = loadWebConfig(env);
     if (web.enabled || options.forcePanel) {
       panel = await startPanel(
-        { runtime, env, envPath: options.envPath, defaults: options.defaults },
+        { runtime, env, envPath: options.envPath, defaults: options.defaults, version: options.version ?? packageVersion() },
         options.port ?? web.port,
         { fallbackPort: options.fallbackPort }
       );

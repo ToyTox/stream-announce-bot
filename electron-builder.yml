@@ -1,0 +1,42 @@
+# Сборка установщиков: npm run dist:mac / dist:win. В релиз их выкладывает GitHub Actions (.github/workflows/release.yml).
+appId: ru.toytox.stream-announce
+productName: Анонсы стримов
+# Латиница в именах файлов: кириллица в ссылках на скачивание неудобна.
+artifactName: stream-announce-${version}-${arch}.${ext}
+directories:
+  output: release
+files:
+  - dist-desktop/**
+  - web/**
+  - desktop/assets/**
+  - package.json
+asar: true
+# Нативный .node нельзя загрузить из архива.
+asarUnpack:
+  - node_modules/better-sqlite3/**
+# better-sqlite3 13 на Node-API: один бинарник работает и в Node, и в Electron, пересборка не нужна.
+npmRebuild: false
+# Выкладывает workflow, а не electron-builder.
+publish: null
+mac:
+  target: dmg
+  # better-sqlite3 13 кладёт в пакет бинарники всех платформ; лишние не нужны.
+  files:
+    - "!node_modules/better-sqlite3/prebuilds/{linux,linuxmusl,win32}-*.node"
+  category: public.app-category.utilities
+  # Бесплатная ad-hoc подпись: без неё скачанное arm64-приложение macOS называет «повреждённым».
+  identity: "-"
+  # Hardened runtime при ad-hoc подписи требует лишних entitlements, иначе приложение может не запуститься.
+  hardenedRuntime: false
+win:
+  files:
+    - "!node_modules/better-sqlite3/prebuilds/{linux,linuxmusl,darwin}-*.node"
+  target:
+    - target: nsis
+      arch: x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
