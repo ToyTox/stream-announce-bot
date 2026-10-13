@@ -12,7 +12,7 @@ import { recentLogs } from '../log.js';
 import { TelegramError } from '../telegram/client.js';
 import { PLATFORMS, PLATFORM_LABELS } from '../types.js';
 import { replaceEnvFile, writeEnvFile } from './envFile.js';
-import { settingsChanges, settingsView } from './settings.js';
+import { SETTING_GUIDES, settingsChanges, settingsView } from './settings.js';
 
 /**
  * Локальная панель: настройки, статус, превью сообщений и лог. Слушает только
@@ -268,7 +268,7 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'GET /api/settings':
-        return sendJson(res, 200, { fields: settingsView(env), configError: runtime.configError });
+        return sendJson(res, 200, { fields: settingsView(env), guides: SETTING_GUIDES, configError: runtime.configError });
 
       case 'PUT /api/settings': {
         const body = await readJson(req);

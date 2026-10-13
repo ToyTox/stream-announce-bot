@@ -137,6 +137,12 @@
   .field label { padding-top: 8px; font-weight: 500; }
   .field .hint { grid-column: 2; font-size: 12px; color: var(--muted); }
   @media (max-width: 640px) { .field { grid-template-columns: minmax(0, 1fr); } .field .hint { grid-column: 1; } .field label { padding-top: 0; } }
+  .guide { margin: 0 0 12px; font-size: 13px; }
+  .guide summary { cursor: pointer; color: var(--link); }
+  .guide ol { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 4px; overflow-wrap: anywhere; }
+  .guide .links { margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .guide a, .guide-doc a { color: var(--link); }
+  .guide-doc { margin: 0 0 14px; font-size: 14px; }
   .result { font-size: 14px; }
   .result.ok { color: var(--ok); }
   .result.error { color: var(--error); }
@@ -229,6 +235,10 @@
 
   <section id="tab-settings" hidden>
     <form id="settings-form" class="card" autocomplete="off">
+      <p class="guide-doc">
+        <a id="guide-readme" href="https://github.com/ToyTox/stream-announce-bot#настройка-бота" target="_blank" rel="noopener noreferrer">Подробная инструкция на GitHub</a>
+        <span class="muted small">(нужен интернет; краткие инструкции «Как получить» ниже работают без него)</span>
+      </p>
       <div id="settings-fields"></div>
       <div class="row">
         <button class="btn primary" type="submit" id="settings-save">Сохранить и перезапустить бота</button>
@@ -543,6 +553,33 @@
       const title = document.createElement('h3');
       title.textContent = name;
       group.append(title);
+      const guide = (data.guides ?? []).find((g) => g.group === name);
+      if (guide) {
+        const details = document.createElement('details');
+        details.className = 'guide';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Как получить';
+        const steps = document.createElement('ol');
+        for (const step of guide.steps) {
+          const li = document.createElement('li');
+          li.textContent = step;
+          steps.append(li);
+        }
+        details.append(summary, steps);
+        if (guide.links?.length) {
+          const links = document.createElement('div');
+          links.className = 'links';
+          for (const item of guide.links) {
+            if (!/^https:\/\//.test(item.url)) continue;
+            const a = document.createElement('a');
+            a.href = item.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+            a.textContent = item.label;
+            links.append(a);
+          }
+          details.append(links);
+        }
+        group.append(details);
+      }
       for (const field of fields) {
         const row = document.createElement('div');
         row.className = 'field';

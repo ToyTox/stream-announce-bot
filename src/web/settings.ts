@@ -27,7 +27,7 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: 'TELEGRAM_ADMIN_ID', group: 'Telegram', label: 'Ваш user ID', type: 'number', hint: 'Только от него бот принимает команды; нужен и для загрузки превью из панели' },
 
   { key: 'TWITCH_LOGIN', group: 'Twitch', label: 'Логин', type: 'text', hint: 'Как в адресе twitch.tv/<логин>' },
-  { key: 'TWITCH_CLIENT_ID', group: 'Twitch', label: 'Client ID', type: 'text', hint: 'dev.twitch.tv/console/apps' },
+  { key: 'TWITCH_CLIENT_ID', group: 'Twitch', label: 'Client ID', type: 'text', hint: 'Из приложения на dev.twitch.tv' },
   { key: 'TWITCH_CLIENT_SECRET', group: 'Twitch', label: 'Client Secret', type: 'text', secret: true },
 
   { key: 'YOUTUBE_CHANNEL_ID', group: 'YouTube', label: 'ID канала', type: 'text', hint: 'Начинается с UC, 24 символа' },
@@ -53,6 +53,56 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: 'OFFLINE_GRACE_MS', group: 'Поведение', label: 'Окончание эфира после молчания, мс', type: 'number', placeholder: '180000' },
   { key: 'ANNOUNCE_END', group: 'Поведение', label: 'Сообщение об окончании эфира', type: 'bool', placeholder: 'true' },
   { key: 'DRY_RUN', group: 'Поведение', label: 'Тестовый режим (ничего не отправлять)', type: 'bool', placeholder: 'false' },
+];
+
+export interface GroupGuide {
+  group: string;
+  steps: string[];
+  /** Внешние ссылки — только абсолютные https. */
+  links?: Array<{ label: string; url: string }>;
+}
+
+/** Пошаговые инструкции по группам: по смыслу совпадают с разделом «Настройка бота» в README. */
+export const SETTING_GUIDES: GroupGuide[] = [
+  {
+    group: 'Telegram',
+    steps: [
+      'Напишите @BotFather команду /newbot и получите токен — вставьте его в поле «Токен бота».',
+      'Добавьте бота в группу. Права администратора не обязательны, если в группе не запрещено писать участникам.',
+      'ID группы: скопируйте ссылку на любое сообщение группы — t.me/c/2241331974/… — и добавьте -100 перед числом: -1002241331974.',
+      'ID темы: если в группе включены темы, это первое число после ID группы в ссылке на сообщение из неё. Для основной темы (General, даже переименованной) оставьте поле пустым.',
+      'Ваш user ID: напишите @userinfobot, он ответит вашим ID. Затем отправьте своему боту /start — без этого он не сможет писать вам в личку.',
+    ],
+    links: [
+      { label: '@BotFather', url: 'https://t.me/BotFather' },
+      { label: '@userinfobot', url: 'https://t.me/userinfobot' },
+    ],
+  },
+  {
+    group: 'Twitch',
+    steps: [
+      'Создайте приложение на dev.twitch.tv/console/apps: Redirect URL — https://localhost, тип клиента — «Конфиденциально».',
+      'Скопируйте Client ID и Client Secret в поля ниже.',
+      'Логин — как в адресе twitch.tv/<логин>.',
+    ],
+    links: [{ label: 'dev.twitch.tv/console/apps', url: 'https://dev.twitch.tv/console/apps' }],
+  },
+  {
+    group: 'YouTube',
+    steps: [
+      'ID канала вида UC… возьмите на странице youtube.com/account_advanced. Ник @… не подходит.',
+      'API-ключ необязателен: без него бот читает страницу /live.',
+    ],
+    links: [{ label: 'youtube.com/account_advanced', url: 'https://www.youtube.com/account_advanced' }],
+  },
+  {
+    group: 'VK',
+    steps: [
+      'Канал VK Live: имя из адреса live.vkvideo.ru/<имя>.',
+      'Для ссылки на записи укажите канал на vkvideo.ru.',
+    ],
+    links: [{ label: 'vkvideo.ru', url: 'https://vkvideo.ru' }],
+  },
 ];
 
 const FIELDS_BY_KEY = new Map(SETTING_FIELDS.map((field) => [field.key, field]));

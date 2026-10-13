@@ -174,6 +174,19 @@ describe('панель: настройки', () => {
     expect(JSON.stringify(reply.json)).not.toContain('AAHkSECRET');
   });
 
+  it('отдаёт инструкции групп, внешние ссылки только https', async () => {
+    const reply = await call('GET', '/api/settings');
+    const guides = reply.json.guides as Array<{ group: string; steps: string[]; links?: Array<{ url: string }> }>;
+
+    for (const group of ['Telegram', 'Twitch', 'YouTube', 'VK']) {
+      const guide = guides.find((item) => item.group === group);
+      expect(guide?.steps.length).toBeGreaterThan(0);
+    }
+    for (const link of guides.flatMap((guide) => guide.links ?? [])) {
+      expect(link.url).toMatch(/^https:\/\//);
+    }
+  });
+
   it('невалидные настройки не трогают .env и бота', async () => {
     const before = readFileSync(envPath, 'utf8');
 
