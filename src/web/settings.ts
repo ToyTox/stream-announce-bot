@@ -26,6 +26,8 @@ export const SETTING_FIELDS: SettingField[] = [
   { key: 'TELEGRAM_TOPIC_ID', group: 'Telegram', label: 'ID темы', type: 'number', hint: 'Пусто — основная тема (General)' },
   { key: 'TELEGRAM_ADMIN_ID', group: 'Telegram', label: 'Ваш user ID', type: 'number', hint: 'Только от него бот принимает команды; нужен и для загрузки превью из панели' },
 
+  { key: 'DISCORD_WEBHOOK_URL', group: 'Discord', label: 'Адрес вебхука', type: 'text', secret: true, hint: 'Необязательно: с вебхуком анонсы дублируются в канал Discord. В адресе есть токен — никому не показывайте' },
+
   { key: 'TWITCH_LOGIN', group: 'Twitch', label: 'Логин', type: 'text', hint: 'Как в адресе twitch.tv/<логин>' },
   { key: 'TWITCH_CLIENT_ID', group: 'Twitch', label: 'Client ID', type: 'text', hint: 'Из приложения на dev.twitch.tv' },
   { key: 'TWITCH_CLIENT_SECRET', group: 'Twitch', label: 'Client Secret', type: 'text', secret: true },
@@ -76,6 +78,15 @@ export const SETTING_GUIDES: GroupGuide[] = [
     links: [
       { label: '@BotFather', url: 'https://t.me/BotFather' },
       { label: '@userinfobot', url: 'https://t.me/userinfobot' },
+    ],
+  },
+  {
+    group: 'Discord',
+    steps: [
+      'Откройте сервер в Discord: Настройки сервера → Интеграции → Вебхуки → Новый вебхук.',
+      'Выберите канал, в который должны приходить анонсы.',
+      'Нажмите «Копировать URL вебхука» и вставьте адрес в поле ниже.',
+      'Команды бота работают только в Telegram; своя картинка из /image в Discord не уходит — там берётся превью с приоритетной площадки.',
     ],
   },
   {

@@ -19,6 +19,10 @@ export interface VkVideoConfig {
   channel: string;
 }
 
+export interface DiscordConfig {
+  webhookUrl: string;
+}
+
 export interface Config {
   telegram: {
     botToken: string;
@@ -26,6 +30,8 @@ export interface Config {
     topicId?: number;
     adminId?: number;
   };
+  /** Необязательная вторая площадка доставки: анонсы дублируются в канал Discord. */
+  discord?: DiscordConfig;
   twitch?: TwitchConfig;
   youtube?: YouTubeConfig;
   vkvideo?: VkVideoConfig;
@@ -117,6 +123,42 @@ function vkVideoConfig(env: Env): VkVideoConfig | undefined {
   return channel ? { channel } : undefined;
 }
 
+const DISCORD_HOSTS = new Set([
+  'discord.com',
+  'ptb.discord.com',
+  'canary.discord.com',
+  'discordapp.com',
+  'ptb.discordapp.com',
+  'canary.discordapp.com',
+]);
+
+/**
+ * Вебхук Discord: https://discord.com/api/webhooks/{id}/{token}. В адресе лежит токен,
+ * поэтому в тексте ошибки значение не повторяем.
+ */
+function discordConfig(env: Env): DiscordConfig | undefined {
+  const raw = str(env, 'DISCORD_WEBHOOK_URL');
+  if (!raw) return undefined;
+
+  const fail = (): never => {
+    throw new ConfigError(
+      'DISCORD_WEBHOOK_URL: ожидается адрес вебхука вида https://discord.com/api/webhooks/<id>/<токен> без параметров'
+    );
+  };
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return fail();
+  }
+  const validPath = /^\/api\/webhooks\/\d+\/[\w-]+\/?$/.test(url.pathname);
+  const clean = !url.search && !url.hash && !url.username && !url.password && !url.port;
+  if (url.protocol !== 'https:' || !DISCORD_HOSTS.has(url.hostname) || !validPath || !clean) return fail();
+
+  return { webhookUrl: `${url.origin}${url.pathname.replace(/\/$/, '')}` };
+}
+
 export function loadConfig(env: Env = process.env): Config {
   const primaryRaw = str(env, 'PRIMARY_PLATFORM') ?? 'twitch';
   if (!isPlatform(primaryRaw)) {
@@ -132,6 +174,7 @@ export function loadConfig(env: Env = process.env): Config {
       topicId: optionalInt(env, 'TELEGRAM_TOPIC_ID'),
       adminId: optionalInt(env, 'TELEGRAM_ADMIN_ID'),
     },
+    discord: discordConfig(env),
     twitch: twitchConfig(env),
     youtube: youtubeConfig(env),
     vkvideo: vkVideoConfig(env),

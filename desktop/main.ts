@@ -249,7 +249,7 @@ function notify(event: AnnouncerEvent): void {
       case 'finished':
         return { title: 'Эфир завершён', body: `Длился ${formatDuration(event.durationMs)}` };
       case 'announce_failed':
-        return { title: 'Не удалось отправить анонс', body: event.error };
+        return { title: `Не удалось отправить анонс (${event.channel})`, body: event.error };
     }
   })();
   new Notification(text).show();

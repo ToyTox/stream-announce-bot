@@ -178,13 +178,42 @@ describe('панель: настройки', () => {
     const reply = await call('GET', '/api/settings');
     const guides = reply.json.guides as Array<{ group: string; steps: string[]; links?: Array<{ url: string }> }>;
 
-    for (const group of ['Telegram', 'Twitch', 'YouTube', 'VK']) {
+    for (const group of ['Telegram', 'Discord', 'Twitch', 'YouTube', 'VK']) {
       const guide = guides.find((item) => item.group === group);
       expect(guide?.steps.length).toBeGreaterThan(0);
     }
     for (const link of guides.flatMap((guide) => guide.links ?? [])) {
       expect(link.url).toMatch(/^https:\/\//);
     }
+  });
+
+  it('вебхук Discord маскируется в браузере и сохраняется в .env', async () => {
+    const hook = 'https://discord.com/api/webhooks/123456789/SECRETtokenValue';
+    const saved = await call('PUT', '/api/settings', { body: { values: { DISCORD_WEBHOOK_URL: hook } } });
+
+    expect(saved.status).toBe(200);
+    expect(saved.json.changed).toEqual(['DISCORD_WEBHOOK_URL']);
+    expect(readFileSync(envPath, 'utf8')).toContain(`DISCORD_WEBHOOK_URL=${hook}`);
+    expect(runtime.restart).toHaveBeenCalledWith(env);
+
+    const reply = await call('GET', '/api/settings');
+    const field = reply.json.fields.find((item: any) => item.key === 'DISCORD_WEBHOOK_URL');
+    expect(field).toMatchObject({ secret: true, isSet: true, group: 'Discord' });
+    expect(JSON.stringify(reply.json)).not.toContain('SECRETtoken');
+
+    const kept = await call('PUT', '/api/settings', { body: { values: { DISCORD_WEBHOOK_URL: '' } } });
+    expect(kept.json.changed).toEqual([]);
+    expect(env.DISCORD_WEBHOOK_URL).toBe(hook);
+  });
+
+  it('чужой адрес вместо вебхука Discord не сохраняется', async () => {
+    const before = readFileSync(envPath, 'utf8');
+
+    const reply = await call('PUT', '/api/settings', { body: { values: { DISCORD_WEBHOOK_URL: 'https://example.com/api/webhooks/1/tok' } } });
+
+    expect(reply.status).toBe(400);
+    expect(reply.json.error).toContain('DISCORD_WEBHOOK_URL');
+    expect(readFileSync(envPath, 'utf8')).toBe(before);
   });
 
   it('невалидные настройки не трогают .env и бота', async () => {

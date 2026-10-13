@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { CAPTION_LIMIT, formatDuration, renderAnnounce, renderFinished } from '../../src/announceTemplate.js';
+import {
+  CAPTION_LIMIT,
+  DISCORD_DESCRIPTION_LIMIT,
+  THANKS,
+  formatDuration,
+  customTextToMarkdown,
+  renderAnnounce,
+  renderDiscordAnnounce,
+  renderDiscordFinished,
+  renderFinished,
+} from '../../src/announceTemplate.js';
 
 const links = [
   { label: 'Twitch', url: 'https://twitch.tv/me' },
@@ -118,5 +128,75 @@ describe('formatDuration', () => {
     [95 * 60_000, '1 ч 35 мин'],
   ])('%i мс → %s', (ms, expected) => {
     expect(formatDuration(ms)).toBe(expected);
+  });
+});
+
+describe('Discord', () => {
+  it('анонс: маскированные ссылки и состав как в Telegram', () => {
+    const text = renderDiscordAnnounce({ title: 'Стрим', game: 'Elden Ring', links });
+
+    expect(text.startsWith('Всем привет\n\n🔴 **Стрим**\n🎮 Elden Ring')).toBe(true);
+    expect(text).toContain('▶️ [Twitch](https://twitch.tv/me)');
+    expect(text).toContain('▶️ [VK Live](https://live.vkvideo.ru/me)');
+  });
+
+  it('экранирует разметку и не даёт названию сломать ссылки', () => {
+    const text = renderDiscordAnnounce({
+      title: '**ЖИРНЫЙ** [клик](https://evil.test) @everyone',
+      game: '# заголовок_',
+      links: [{ label: 'My [site]', url: 'https://a.test/x_(y)' }],
+    });
+
+    expect(text).toContain('\\*\\*ЖИРНЫЙ\\*\\* \\[клик\\]\\(https://evil.test\\) @everyone');
+    expect(text).toContain('🎮 \\# заголовок\\_');
+    expect(text).toContain('[My \\[site\\]](https://a.test/x_%28y%29)');
+  });
+
+  it('итог эфира: длительность, благодарность, ссылки', () => {
+    const text = renderDiscordFinished({ title: 'Стрим', durationMs: 150 * 60_000, links: [links[0]!] });
+
+    expect(text).toContain('⚫️ **Стрим**');
+    expect(text).toContain('длился 2 ч 30 мин');
+    expect(text).toContain(THANKS);
+    expect(text).toContain('[Twitch](https://twitch.tv/me)');
+  });
+
+  it('врезка — обычный текст: разметка и теги экранируются, как и в Telegram', () => {
+    const text = renderDiscordAnnounce({
+      title: 'Стрим',
+      customText: 'Сегодня <b>финал</b> & *розыгрыш* [тут](https://evil.test) `код` @everyone',
+      links: [links[0]!],
+    });
+
+    expect(text).toContain(
+      'Сегодня \\<b\\>финал\\</b\\> & \\*розыгрыш\\* \\[тут\\]\\(https://evil.test\\) \\`код\\` @everyone'
+    );
+  });
+
+  it('врезка в начале строки не превращается в список, заголовок или цитату', () => {
+    const text = customTextToMarkdown('- пункт\n# заголовок\n> цитата\n+ плюс', 1000);
+
+    expect(text).toBe('\\- пункт\n\\# заголовок\n\\> цитата\n\\+ плюс');
+  });
+
+  it('обрезает только врезку и укладывается в лимит описания', () => {
+    const text = renderDiscordAnnounce({
+      title: 'Стрим',
+      game: 'Игра',
+      customText: '*'.repeat(9000),
+      links,
+    });
+
+    expect(text.length).toBeLessThanOrEqual(DISCORD_DESCRIPTION_LIMIT);
+    expect(text).toContain('…\n\n▶️ [Twitch]');
+    expect(text.startsWith('Всем привет\n\n🔴 **Стрим**\n🎮 Игра\n\n\\*')).toBe(true);
+    expect(text.endsWith('[VK Live](https://live.vkvideo.ru/me)')).toBe(true);
+  });
+
+  it('обрезка не рвёт экранирование и суррогатные пары', () => {
+    const text = customTextToMarkdown('😀*'.repeat(100), 21);
+
+    expect(text.length).toBeLessThanOrEqual(21);
+    expect(text).toMatch(/^(😀\\\*)+…$/u);
   });
 });

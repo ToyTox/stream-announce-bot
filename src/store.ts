@@ -30,6 +30,29 @@ export interface BroadcastStreamRow {
   endedAt: number | null;
 }
 
+export type DeliveryState = 'pending' | 'sent' | 'failed';
+
+/** Доставка анонса эфира на одну площадку. */
+export interface DeliveryRow {
+  broadcastId: number;
+  channel: string;
+  state: DeliveryState;
+  sentAt: number | null;
+  messageId: string | null;
+  target: string | null;
+  error: string | null;
+}
+
+interface RawDelivery {
+  broadcast_id: number;
+  channel: string;
+  state: DeliveryState;
+  sent_at: number | null;
+  message_id: string | null;
+  target: string | null;
+  error: string | null;
+}
+
 interface RawBroadcast {
   id: number;
   started_at: number;
@@ -87,6 +110,18 @@ function toStream(row: RawStream): BroadcastStreamRow {
   };
 }
 
+function toDelivery(row: RawDelivery): DeliveryRow {
+  return {
+    broadcastId: row.broadcast_id,
+    channel: row.channel,
+    state: row.state,
+    sentAt: row.sent_at,
+    messageId: row.message_id,
+    target: row.target,
+    error: row.error,
+  };
+}
+
 export const SETTING_ANNOUNCE_TEXT = 'announce_text';
 export const SETTING_UPDATES_OFFSET = 'updates_offset';
 export const SETTING_ANNOUNCE_PHOTO = 'announce_photo';
@@ -116,18 +151,50 @@ export class Store {
     this.db.prepare('UPDATE broadcast SET last_live_at = ? WHERE id = ?').run(now, broadcastId);
   }
 
-  markAnnounced(
+  /** Эфир считается анонсированным с первой доставки на любую площадку; врезка фиксируется тогда же. */
+  markAnnounced(broadcastId: number, now: number, announceText: string | null): void {
+    this.db
+      .prepare(
+        'UPDATE broadcast SET announced_at = COALESCE(announced_at, ?), announce_text = COALESCE(announce_text, ?) WHERE id = ?'
+      )
+      .run(now, announceText, broadcastId);
+  }
+
+  deliveriesOf(broadcastId: number): DeliveryRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM broadcast_delivery WHERE broadcast_id = ? ORDER BY rowid')
+      .all(broadcastId) as RawDelivery[];
+    return rows.map(toDelivery);
+  }
+
+  /** Заводит доставку «ждёт отправки» для площадок, включённых на момент анонса. Вызывается один раз на эфир. */
+  startDeliveries(broadcastId: number, channels: string[]): void {
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO broadcast_delivery (broadcast_id, channel, state) VALUES (?, ?, 'pending')"
+    );
+    for (const channel of channels) insert.run(broadcastId, channel);
+  }
+
+  markDelivered(
     broadcastId: number,
+    channel: string,
     now: number,
-    chatId: string,
-    messageId: number | null,
-    announceText: string | null
+    messageId: string | null,
+    target: string | null
   ): void {
     this.db
       .prepare(
-        'UPDATE broadcast SET announced_at = ?, chat_id = ?, message_id = ?, announce_text = ? WHERE id = ?'
+        `UPDATE broadcast_delivery SET state = 'sent', sent_at = ?, message_id = ?, target = ?, error = NULL
+         WHERE broadcast_id = ? AND channel = ?`
       )
-      .run(now, chatId, messageId, announceText, broadcastId);
+      .run(now, messageId, target, broadcastId, channel);
+  }
+
+  /** Постоянный отказ площадки: больше не повторяем. */
+  markDeliveryFailed(broadcastId: number, channel: string, error: string): void {
+    this.db
+      .prepare("UPDATE broadcast_delivery SET state = 'failed', error = ? WHERE broadcast_id = ? AND channel = ?")
+      .run(error, broadcastId, channel);
   }
 
   endBroadcast(broadcastId: number, now: number): void {

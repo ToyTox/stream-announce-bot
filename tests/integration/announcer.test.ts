@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnnouncerEvent } from '../../src/announcer.js';
+import { DiscordError } from '../../src/discord/client.js';
 import { TelegramError } from '../../src/telegram/client.js';
 import { createHarness, liveStream, type Harness } from '../helpers/announcerHarness.js';
 
@@ -292,7 +293,237 @@ describe('Announcer', () => {
 
     await expect(run(3)).resolves.toBeUndefined();
 
-    expect(events[0]).toEqual({ type: 'announce_failed', error: 'Telegram недоступен' });
+    expect(events[0]).toEqual({ type: 'announce_failed', channel: 'Telegram', error: 'Telegram недоступен' });
     expect(harness.store.openBroadcast()?.announcedAt).toBeNull();
+  });
+});
+
+describe('Announcer: Telegram и Discord', () => {
+  const hookError = () => new DiscordError('not_found', 'вебхук не найден');
+  const hookDown = () => new DiscordError('upstream', 'Discord недоступен');
+
+  function embed(call = 0) {
+    return harness.discord.send.mock.calls[call]?.[0].embeds?.[0];
+  }
+
+  beforeEach(() => {
+    harness.cleanup();
+    harness = createHarness({}, undefined, { discord: true });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+  });
+
+  it('обе площадки получают анонс, в Discord — описание Markdown и превью Twitch', async () => {
+    await run(3);
+
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+    expect(embed()?.description).toContain('▶️ [Twitch](https://twitch.tv/me)');
+    expect(embed()?.image).toEqual({ url: 'https://cdn/twitch.jpg' });
+    expect(harness.store.openBroadcast()?.announcedAt).not.toBeNull();
+    expect(harness.announcer.status()?.deliveries).toEqual([
+      { channel: 'telegram', label: 'Telegram', state: 'sent' },
+      { channel: 'discord', label: 'Discord', state: 'sent' },
+    ]);
+  });
+
+  it('своя картинка из /image в Discord не уходит, берётся превью Twitch', async () => {
+    harness.store.setAnnouncePhoto('AgACfileId');
+    await run(3);
+
+    expect(harness.telegram.sendPhoto.mock.calls[0]?.[0]).toBe('AgACfileId');
+    expect(embed()?.image).toEqual({ url: 'https://cdn/twitch.jpg' });
+  });
+
+  it('нет превью — Discord получает сообщение без картинки', async () => {
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock, { thumbnailUrl: undefined });
+    await run(3);
+
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+    expect(embed()).not.toHaveProperty('image');
+  });
+
+  it('врезка из /text попадает в обе площадки (в Discord — Markdown)', async () => {
+    harness.store.setAnnounceText('Сегодня *финал*');
+    await run(3);
+
+    expect(harness.telegram.sendPhoto.mock.calls[0]?.[1]).toContain('Сегодня *финал*');
+    expect(embed()?.description).toContain('Сегодня \\*финал\\*');
+    expect(harness.store.announceText()).toBeNull();
+  });
+
+  it('сбой Discord не мешает Telegram, а Discord повторяется в следующем тике', async () => {
+    harness.discord.send.mockRejectedValueOnce(hookDown());
+    await run(3);
+
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+    expect(harness.announcer.status()?.deliveries.map((item) => item.state)).toEqual(['sent', 'pending']);
+
+    await run(1);
+
+    expect(harness.discord.send).toHaveBeenCalledTimes(2);
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
+
+    await run(2);
+    expect(harness.discord.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('повтор для Discord использует зафиксированную врезку, а не новую /text', async () => {
+    harness.store.setAnnounceText('Старая врезка');
+    harness.discord.send.mockRejectedValueOnce(hookDown());
+    await run(3);
+    harness.store.setAnnounceText('Новая врезка');
+
+    await run(1);
+
+    expect(embed(1)?.description).toContain('Старая врезка');
+    expect(embed(1)?.description).not.toContain('Новая врезка');
+  });
+
+  it('сбой Telegram не мешает Discord, а Telegram повторяется', async () => {
+    harness.telegram.sendPhoto.mockRejectedValueOnce(new TelegramError('upstream', 'Telegram недоступен'));
+    harness.telegram.sendMessage.mockRejectedValueOnce(new TelegramError('upstream', 'Telegram недоступен'));
+    await run(3);
+
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+    expect(harness.store.openBroadcast()?.announcedAt).not.toBeNull();
+
+    await run(1);
+
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(2);
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('постоянная ошибка Discord: повторов нет, Telegram цел, приложение не падает', async () => {
+    harness.discord.send.mockRejectedValue(hookError());
+
+    await expect(run(6)).resolves.toBeUndefined();
+
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
+    expect(harness.announcer.status()?.deliveries.map((item) => item.state)).toEqual(['sent', 'failed']);
+  });
+
+  it('постоянная ошибка Telegram, как и раньше, прерывает проверку, но Discord получает анонс', async () => {
+    harness.telegram.sendPhoto.mockRejectedValue(new TelegramError('unauthorized', 'неверный токен'));
+    harness.telegram.sendMessage.mockRejectedValue(new TelegramError('unauthorized', 'неверный токен'));
+
+    harness.clock.advance(MINUTE);
+    await harness.announcer.tick();
+    harness.clock.advance(MINUTE);
+    await harness.announcer.tick();
+    harness.clock.advance(MINUTE);
+    await expect(harness.announcer.tick()).rejects.toMatchObject({ code: 'unauthorized' });
+
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('событие сбоя называет площадку', async () => {
+    const events: AnnouncerEvent[] = [];
+    harness.cleanup();
+    harness = createHarness({}, (event) => events.push(event), { discord: true });
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    harness.discord.send.mockRejectedValue(hookError());
+
+    await run(3);
+
+    expect(events).toContainEqual({ type: 'announce_failed', channel: 'Discord', error: 'вебхук не найден' });
+    expect(events.filter((event) => event.type === 'announced')).toHaveLength(1);
+  });
+
+  it('рестарт посреди эфира не даёт дублей ни в одной площадке', async () => {
+    await run(3);
+
+    harness.announcer = harness.restart();
+    await run(3);
+
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('рестарт досылает только недоставленную площадку', async () => {
+    harness.discord.send.mockRejectedValueOnce(hookDown());
+    await run(3);
+
+    harness.announcer = harness.restart();
+    await run(1);
+
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('итог эфира уходит в обе площадки, где был анонс', async () => {
+    await run(3);
+    harness.watchers.twitch.state = null;
+    await run(5);
+
+    expect(harness.telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send).toHaveBeenCalledTimes(2);
+    expect(embed(1)?.description).toContain('Эфир завершён, длился 2 мин');
+  });
+
+  it('итог уходит только туда, куда дошёл анонс', async () => {
+    harness.discord.send.mockRejectedValue(hookError());
+    await run(3);
+    harness.discord.send.mockClear();
+    harness.watchers.twitch.state = null;
+    await run(5);
+
+    expect(harness.telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send).not.toHaveBeenCalled();
+  });
+
+  it('сбой итога в одной площадке не мешает другой и не повторяется', async () => {
+    await run(3);
+    harness.telegram.sendMessage.mockRejectedValue(new TelegramError('upstream', 'Telegram недоступен'));
+    harness.watchers.twitch.state = null;
+    await run(8);
+
+    expect(harness.telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('Discord, добавленный после анонса, анонса не получает, но итог и следующие эфиры — получает', async () => {
+    harness.announcer = harness.restart(false);
+    await run(3);
+    expect(harness.discord.send).not.toHaveBeenCalled();
+
+    harness.announcer = harness.restart(true);
+    await run(3);
+    expect(harness.discord.send).not.toHaveBeenCalled();
+
+    harness.watchers.twitch.state = null;
+    await run(5);
+    expect(harness.discord.send).not.toHaveBeenCalled(); // итог — только туда, куда дошёл анонс
+
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    await run(3);
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('без вебхука всё как раньше: ни одного вызова Discord', async () => {
+    harness.announcer = harness.restart(false);
+    await run(3);
+
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send).not.toHaveBeenCalled();
+    expect(harness.announcer.status()?.deliveries).toEqual([{ channel: 'telegram', label: 'Telegram', state: 'sent' }]);
+  });
+
+  it('DRY_RUN действует на все площадки', async () => {
+    harness.cleanup();
+    harness = createHarness({ dryRun: true }, undefined, { discord: true });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    await run(3);
+    harness.watchers.twitch.state = null;
+    await run(5);
+
+    expect(harness.telegram.sendPhoto).not.toHaveBeenCalled();
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+    expect(harness.discord.send).not.toHaveBeenCalled();
+    expect(harness.store.openBroadcast()).toBeNull();
   });
 });

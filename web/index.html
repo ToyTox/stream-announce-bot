@@ -388,6 +388,11 @@
           a.textContent = 'открыть в Telegram';
           sub.append(a);
         }
+        // Площадка, до которой анонс не дошёл, — отдельной строкой: остальные его уже получили.
+        for (const delivery of b.deliveries ?? []) {
+          if (delivery.state === 'sent') continue;
+          sub.append(` · ${delivery.label}: ${delivery.state === 'failed' ? 'отказ, повторов не будет' : 'не доставлено, повторяем'}`);
+        }
       }
       broadcast.append(line, sub);
     }
