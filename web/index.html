@@ -61,6 +61,7 @@
   .pill.ok { color: var(--ok); }
   .pill.warn { color: var(--warn); }
   .pill.error { color: var(--error); }
+  header select { width: auto; padding: 4px 8px; }
   nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
   nav button {
     border: 0; background: none; color: var(--muted); font: inherit; padding: 6px 12px;
@@ -158,15 +159,16 @@
 </head>
 <body>
 <header>
-  <h1>Анонсы стримов</h1>
+  <h1 data-i18n="app.name"></h1>
   <span id="version" class="version"></span>
   <span id="bot-pill" class="pill">…</span>
   <nav role="tablist">
-    <button role="tab" data-tab="status" aria-selected="true">Статус</button>
-    <button role="tab" data-tab="message">Сообщение</button>
-    <button role="tab" data-tab="settings">Настройки</button>
-    <button role="tab" data-tab="log">Лог</button>
+    <button role="tab" data-tab="status" aria-selected="true" data-i18n="ui.tab.status"></button>
+    <button role="tab" data-tab="message" data-i18n="ui.tab.message"></button>
+    <button role="tab" data-tab="settings" data-i18n="ui.tab.settings"></button>
+    <button role="tab" data-tab="log" data-i18n="ui.tab.log"></button>
   </nav>
+  <select id="lang-select" data-i18n-label="ui.language"></select>
 </header>
 
 <main>
@@ -174,15 +176,15 @@
 
   <section id="tab-status">
     <div class="card">
-      <h2>Эфир</h2>
+      <h2 data-i18n="ui.broadcast.title"></h2>
       <div id="broadcast" class="muted">…</div>
     </div>
     <div class="card">
-      <h2>Площадки</h2>
+      <h2 data-i18n="ui.platforms.title"></h2>
       <div id="platforms" class="platforms"></div>
       <div class="row" style="margin-top: 14px">
-        <button class="btn" id="probe">Проверить сейчас</button>
-        <button class="btn" id="test-message">Тестовое сообщение в группу</button>
+        <button class="btn" id="probe" data-i18n="ui.probe"></button>
+        <button class="btn" id="test-message" data-i18n="ui.testMessage"></button>
         <span id="status-result" class="result"></span>
       </div>
     </div>
@@ -192,39 +194,39 @@
     <div class="grid-2">
       <div>
         <div class="card">
-          <h2>Текст в анонс</h2>
-          <p class="muted small" style="margin-top: -6px">Уйдёт в ближайший анонс и сбросится — как команда /text.</p>
-          <textarea id="text" placeholder="Например: Сегодня проходим до финала, залетайте!"></textarea>
+          <h2 data-i18n="ui.text.title"></h2>
+          <p class="muted small" style="margin-top: -6px" data-i18n="ui.text.note"></p>
+          <textarea id="text" data-i18n-placeholder="ui.text.placeholder"></textarea>
           <div class="row" style="margin-top: 10px">
-            <button class="btn primary" id="text-save">Сохранить</button>
-            <button class="btn" id="text-clear">Сбросить</button>
+            <button class="btn primary" id="text-save" data-i18n="ui.save"></button>
+            <button class="btn" id="text-clear" data-i18n="ui.reset"></button>
             <span id="text-result" class="result"></span>
           </div>
         </div>
         <div class="card">
-          <h2>Превью</h2>
+          <h2 data-i18n="ui.image.title"></h2>
           <div class="image-box">
-            <div id="thumb" class="thumb">превью Twitch</div>
-            <div class="muted small" id="image-state">Используется превью Twitch.</div>
+            <div id="thumb" class="thumb"></div>
+            <div class="muted small" id="image-state"></div>
           </div>
           <div class="row">
             <input type="file" id="image-file" accept="image/jpeg,image/png,image/webp" hidden>
-            <button class="btn primary" id="image-pick">Загрузить картинку</button>
-            <button class="btn" id="image-clear">Сбросить</button>
+            <button class="btn primary" id="image-pick" data-i18n="ui.image.pick"></button>
+            <button class="btn" id="image-clear" data-i18n="ui.reset"></button>
             <span id="image-result" class="result"></span>
           </div>
-          <p class="muted small" style="margin-bottom: 0">Своё превью используется во всех анонсах, пока его не заменить или не сбросить. Загруженная картинка придёт вам в личку от бота — так Telegram её сохраняет.</p>
+          <p class="muted small" style="margin-bottom: 0" data-i18n="ui.image.note"></p>
         </div>
       </div>
       <div class="card">
-        <h2>Как это будет выглядеть</h2>
+        <h2 data-i18n="ui.preview.title"></h2>
         <div class="chat">
-          <div class="bubble-label">Анонс</div>
+          <div class="bubble-label" data-i18n="ui.preview.announce"></div>
           <div class="bubble">
             <div id="preview-photo"></div>
             <div class="body" id="preview-announce"></div>
           </div>
-          <div class="bubble-label">Окончание эфира</div>
+          <div class="bubble-label" data-i18n="ui.preview.finished"></div>
           <div class="bubble">
             <div class="body" id="preview-finished"></div>
           </div>
@@ -236,23 +238,23 @@
   <section id="tab-settings" hidden>
     <form id="settings-form" class="card" autocomplete="off">
       <p class="guide-doc">
-        <a id="guide-readme" href="https://github.com/ToyTox/stream-announce-bot#настройка-бота" target="_blank" rel="noopener noreferrer">Подробная инструкция на GitHub</a>
-        <span class="muted small">(нужен интернет; краткие инструкции «Как получить» ниже работают без него)</span>
+        <a id="guide-readme" target="_blank" rel="noopener noreferrer" data-i18n="ui.settings.guideLink"></a>
+        <span class="muted small" data-i18n="ui.settings.guideNote"></span>
       </p>
       <div id="settings-fields"></div>
       <div class="row">
-        <button class="btn primary" type="submit" id="settings-save">Сохранить и перезапустить бота</button>
+        <button class="btn primary" type="submit" id="settings-save" data-i18n="ui.settings.save"></button>
         <span id="settings-result" class="result"></span>
       </div>
-      <p class="muted small" style="margin-bottom: 0">Настройки сохраняются в файл .env. Повторного анонса после перезапуска не будет.</p>
+      <p class="muted small" style="margin-bottom: 0" data-i18n="ui.settings.note"></p>
     </form>
     <div class="card">
       <div class="row">
-        <button class="btn" type="button" id="import-env">Импортировать .env…</button>
+        <button class="btn" type="button" id="import-env" data-i18n="ui.import.button"></button>
         <input type="file" id="import-file" hidden>
         <span id="import-result" class="result"></span>
       </div>
-      <p class="muted small" style="margin-bottom: 0">Файл .env целиком заменит текущие настройки, бот перезапустится. Если в файле ошибка, ничего не изменится.</p>
+      <p class="muted small" style="margin-bottom: 0" data-i18n="ui.import.note"></p>
     </div>
   </section>
 
@@ -263,7 +265,49 @@
 
 <script>
   const $ = (id) => document.getElementById(id);
-  const STATE_LABELS = { live: 'В эфире', offline: 'Офлайн', error: 'Ошибка проверки', pending: 'Ещё не проверялась' };
+
+  // ---------- Язык ----------
+  let messages = {};
+  function t(key, params = {}) {
+    const template = messages[key] ?? key;
+    return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match));
+  }
+
+  /** Подставляет тексты в разметку: data-i18n — содержимое, data-i18n-placeholder и data-i18n-label — атрибуты. */
+  function applyStatic(language) {
+    document.documentElement.lang = language;
+    document.title = t('app.name');
+    for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = t(el.dataset.i18n);
+    for (const el of document.querySelectorAll('[data-i18n-placeholder]')) el.placeholder = t(el.dataset.i18nPlaceholder);
+    for (const el of document.querySelectorAll('[data-i18n-label]')) el.setAttribute('aria-label', t(el.dataset.i18nLabel));
+    $('guide-readme').href = t('ui.guideUrl');
+  }
+
+  async function loadI18n() {
+    const data = await api('GET', '/api/i18n');
+    messages = data.messages;
+    applyStatic(data.language);
+    const select = $('lang-select');
+    select.replaceChildren(...[{ value: '', label: t('settings.language.auto') }, ...data.languages.map((l) => ({ value: l.code, label: l.name }))].map((option) => {
+      const el = document.createElement('option');
+      el.value = option.value; el.textContent = option.label;
+      return el;
+    }));
+    select.value = data.setting;
+  }
+
+  $('lang-select').addEventListener('change', async (e) => {
+    try {
+      await api('PUT', '/api/language', { language: e.currentTarget.value });
+      await loadI18n();
+    } catch (error) {
+      showResult($('status-result'), false, error.message);
+      return;
+    }
+    // Всё, что уже нарисовано, перерисовываем на новом языке.
+    loadStatus();
+    if (activeTab !== 'status') loaders[activeTab]?.();
+  });
 
   async function api(method, path, body, headers = {}) {
     const init = { method, headers: { ...headers } };
@@ -293,10 +337,10 @@
   }
 
   function time(ms) {
-    return new Date(ms).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return new Date(ms).toLocaleTimeString(messages.locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
   function dateTime(ms) {
-    return new Date(ms).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+    return new Date(ms).toLocaleString(messages.locale, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
   }
 
   /** Подпись Telegram содержит только <b> и <a>; строим DOM сами, чтобы не вставлять чужой HTML. */
@@ -352,17 +396,17 @@
     const banner = $('config-banner');
     if (!status.running) {
       pill.className = 'pill error';
-      pill.textContent = 'Бот не запущен';
+      pill.textContent = t('ui.pill.down');
       banner.className = 'banner';
       banner.hidden = false;
-      banner.textContent = `Бот не запущен: ${status.configError ?? 'неизвестная ошибка'}. Исправьте во вкладке «Настройки».`;
+      banner.textContent = t('ui.banner.down', { reason: status.configError ?? t('ui.unknownError') });
       $('broadcast').textContent = '—';
       $('platforms').replaceChildren();
       return;
     }
 
     pill.className = status.dryRun ? 'pill warn' : 'pill ok';
-    pill.textContent = status.dryRun ? 'Тестовый режим — сообщения не уходят' : 'Бот работает';
+    pill.textContent = status.dryRun ? t('ui.pill.dryRun') : t('ui.pill.ok');
     banner.hidden = true;
 
     const b = status.broadcast;
@@ -370,23 +414,28 @@
     broadcast.replaceChildren();
     if (!b) {
       broadcast.className = 'muted';
-      broadcast.textContent = 'Сейчас эфира нет.';
+      broadcast.textContent = t('ui.noBroadcast');
     } else {
       broadcast.className = '';
       const line = document.createElement('div');
-      line.textContent = `🔴 В эфире с ${dateTime(b.startedAt)}`;
+      line.textContent = t('ui.liveSince', { time: dateTime(b.startedAt) });
       const sub = document.createElement('div');
       sub.className = 'muted small';
       if (b.announcedAt === null) {
-        sub.textContent = 'Анонс ещё не отправлен — ждём, пока подключатся остальные площадки.';
+        sub.textContent = t('ui.waitingAnnounce');
       } else {
-        sub.append(`Анонс отправлен в ${time(b.announcedAt)}`);
+        sub.append(t('ui.announcedAt', { time: time(b.announcedAt) }));
         if (b.messageUrl) {
           sub.append(' · ');
           const a = document.createElement('a');
           a.href = b.messageUrl; a.target = '_blank'; a.rel = 'noopener noreferrer';
-          a.textContent = 'открыть в Telegram';
+          a.textContent = t('ui.openTelegram');
           sub.append(a);
+        }
+        // Площадка, до которой анонс не дошёл, — отдельной строкой: остальные его уже получили.
+        for (const delivery of b.deliveries ?? []) {
+          if (delivery.state === 'sent') continue;
+          sub.append(` · ${t(delivery.state === 'failed' ? 'ui.delivery.failed' : 'ui.delivery.retry', { label: delivery.label })}`);
         }
       }
       broadcast.append(line, sub);
@@ -401,13 +450,13 @@
       name.textContent = p.label;
       const state = document.createElement('div');
       state.className = `state ${p.state}`;
-      state.textContent = STATE_LABELS[p.state] ?? p.state;
+      state.textContent = messages[`ui.state.${p.state}`] ?? p.state;
       row.append(name, state);
       const detail = document.createElement('div');
       detail.className = p.state === 'error' ? 'detail error' : 'detail';
       if (p.state === 'error') detail.textContent = `${p.error} · ${time(p.checkedAt)}`;
-      else if (p.checkedAt) detail.textContent = `Проверено в ${time(p.checkedAt)}`;
-      else detail.textContent = 'Первая проверка в течение минуты';
+      else if (p.checkedAt) detail.textContent = t('ui.checkedAt', { time: time(p.checkedAt) });
+      else detail.textContent = t('ui.firstCheck');
       row.append(detail);
       return row;
     }));
@@ -418,7 +467,7 @@
       renderStatus(await api('GET', '/api/status'));
     } catch (error) {
       $('bot-pill').className = 'pill error';
-      $('bot-pill').textContent = 'Нет связи с ботом';
+      $('bot-pill').textContent = t('ui.pill.offline');
     }
   }
   loaders.status = loadStatus;
@@ -426,7 +475,7 @@
   $('probe').addEventListener('click', (e) => withButton(e.currentTarget, async () => {
     try {
       renderStatus(await api('POST', '/api/probe', {}));
-      showResult($('status-result'), true, 'Проверено');
+      showResult($('status-result'), true, t('ui.probed'));
     } catch (error) {
       showResult($('status-result'), false, error.message);
     }
@@ -434,7 +483,7 @@
   $('test-message').addEventListener('click', (e) => withButton(e.currentTarget, async () => {
     try {
       await api('POST', '/api/test-message', {});
-      showResult($('status-result'), true, 'Отправлено — проверьте группу');
+      showResult($('status-result'), true, t('ui.testSent'));
     } catch (error) {
       showResult($('status-result'), false, error.message);
     }
@@ -452,21 +501,21 @@
       if (preview.photo === 'custom') {
         const src = `/api/image/file?t=${Date.now()}`;
         const img = document.createElement('img');
-        img.className = 'photo'; img.src = src; img.alt = 'Своё превью';
+        img.className = 'photo'; img.src = src; img.alt = t('ui.image.alt');
         photo.replaceChildren(img);
         const small = document.createElement('img');
         small.className = 'thumb'; small.src = src; small.alt = '';
         thumb.replaceWith(small); small.id = 'thumb';
-        $('image-state').textContent = 'Используется своё превью.';
+        $('image-state').textContent = t('ui.image.usingCustom');
       } else {
         const placeholder = document.createElement('div');
         placeholder.className = 'photo placeholder';
-        placeholder.textContent = 'Превью с Twitch';
+        placeholder.textContent = t('ui.image.photoTwitch');
         photo.replaceChildren(placeholder);
         const box = document.createElement('div');
-        box.className = 'thumb'; box.id = 'thumb'; box.textContent = 'превью Twitch';
+        box.className = 'thumb'; box.id = 'thumb'; box.textContent = t('ui.image.thumbTwitch');
         thumb.replaceWith(box);
-        $('image-state').textContent = 'Используется превью Twitch.';
+        $('image-state').textContent = t('ui.image.usingTwitch');
       }
     } catch (error) {
       $('preview-announce').textContent = error.message;
@@ -488,7 +537,7 @@
     try {
       const { text } = await api('PUT', '/api/text', { text: $('text').value });
       $('text').value = text ?? '';
-      showResult($('text-result'), true, text ? 'Сохранено' : 'Пусто — текста не будет');
+      showResult($('text-result'), true, text ? t('ui.text.saved') : t('ui.text.empty'));
       await loadPreview();
     } catch (error) {
       showResult($('text-result'), false, error.message);
@@ -498,7 +547,7 @@
     try {
       await api('DELETE', '/api/text');
       $('text').value = '';
-      showResult($('text-result'), true, 'Сброшено');
+      showResult($('text-result'), true, t('ui.cleared'));
       await loadPreview();
     } catch (error) {
       showResult($('text-result'), false, error.message);
@@ -512,10 +561,10 @@
     if (!file) return;
     const button = $('image-pick');
     await withButton(button, async () => {
-      showResult($('image-result'), true, 'Загружаю…');
+      showResult($('image-result'), true, t('ui.image.uploading'));
       try {
         await api('PUT', '/api/image', file, { 'Content-Type': file.type });
-        showResult($('image-result'), true, 'Сохранено');
+        showResult($('image-result'), true, t('ui.text.saved'));
         await loadPreview();
       } catch (error) {
         showResult($('image-result'), false, error.message);
@@ -525,7 +574,7 @@
   $('image-clear').addEventListener('click', (e) => withButton(e.currentTarget, async () => {
     try {
       await api('DELETE', '/api/image');
-      showResult($('image-result'), true, 'Сброшено');
+      showResult($('image-result'), true, t('ui.cleared'));
       await loadPreview();
     } catch (error) {
       showResult($('image-result'), false, error.message);
@@ -558,7 +607,7 @@
         const details = document.createElement('details');
         details.className = 'guide';
         const summary = document.createElement('summary');
-        summary.textContent = 'Как получить';
+        summary.textContent = t('ui.settings.guideSummary');
         const steps = document.createElement('ol');
         for (const step of guide.steps) {
           const li = document.createElement('li');
@@ -590,7 +639,7 @@
         if (field.type === 'bool' || field.type === 'select') {
           input = document.createElement('select');
           const options = field.type === 'bool'
-            ? [{ value: 'true', label: 'Да' }, { value: 'false', label: 'Нет' }]
+            ? [{ value: 'true', label: t('ui.settings.yes') }, { value: 'false', label: t('ui.settings.no') }]
             : field.options;
           for (const option of options) {
             const el = document.createElement('option');
@@ -605,10 +654,10 @@
           input.spellcheck = false;
           if (field.secret) {
             input.value = '';
-            input.placeholder = field.isSet ? `задан: ${field.value} — оставьте пустым, чтобы не менять` : 'не задан';
+            input.placeholder = field.isSet ? t('ui.settings.secretSet', { value: field.value }) : t('ui.settings.secretUnset');
           } else {
             input.value = field.value;
-            if (field.placeholder) input.placeholder = `по умолчанию ${field.placeholder}`;
+            if (field.placeholder) input.placeholder = t('ui.settings.default', { value: field.placeholder });
           }
         }
         input.id = `f-${field.key}`;
@@ -634,12 +683,14 @@
       try {
         const result = await api('PUT', '/api/settings', { values });
         if (result.changed.length === 0) {
-          showResult($('settings-result'), true, 'Изменений нет');
+          showResult($('settings-result'), true, t('ui.settings.noChanges'));
         } else if (result.configError) {
-          showResult($('settings-result'), false, `Сохранено, но бот не запустился: ${result.configError}`);
+          showResult($('settings-result'), false, t('ui.settings.savedDown', { error: result.configError }));
         } else {
-          showResult($('settings-result'), true, 'Сохранено, бот перезапущен');
+          showResult($('settings-result'), true, t('ui.settings.saved'));
         }
+        // Язык мог смениться в форме — тексты панели берём заново.
+        await loadI18n();
         await loadSettings();
         await loadStatus();
       } catch (error) {
@@ -658,15 +709,16 @@
         const content = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(String(reader.result));
-          reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+          reader.onerror = () => reject(new Error(t('ui.import.readFail')));
           reader.readAsText(file);
         });
         const result = await api('POST', '/api/import-env', { content });
         if (result.configError) {
-          showResult($('import-result'), false, `Импортировано, но бот не запустился: ${result.configError}`);
+          showResult($('import-result'), false, t('ui.import.down', { error: result.configError }));
         } else {
-          showResult($('import-result'), true, 'Импортировано, бот перезапущен');
+          showResult($('import-result'), true, t('ui.import.ok'));
         }
+        await loadI18n();
         await loadSettings();
         await loadStatus();
       } catch (error) {
@@ -710,8 +762,10 @@
   // #settings в адресе (десктопное приложение при первом запуске) важнее запомненной вкладки.
   const hashTab = location.hash.slice(1);
   if (hashTab) initialTab = hashTab;
-  loadStatus();
-  selectTab(['status', 'message', 'settings', 'log'].includes(initialTab) ? initialTab : 'status');
+  loadI18n().catch(() => {}).then(() => {
+    loadStatus();
+    selectTab(['status', 'message', 'settings', 'log'].includes(initialTab) ? initialTab : 'status');
+  });
 </script>
 </body>
 </html>

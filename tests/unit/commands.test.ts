@@ -8,12 +8,13 @@ const ADMIN = 42;
 let harness: Harness;
 
 /** Прогоняет один апдейт через слушатель: getUpdates отдаёт его и останавливает цикл. */
-async function deliver(message: NonNullable<TelegramUpdate['message']>): Promise<void> {
+async function deliver(message: NonNullable<TelegramUpdate['message']>, language = 'ru'): Promise<void> {
   const listener = new CommandListener({
     telegram: harness.telegram as unknown as TelegramClient,
     store: harness.store,
     announcer: harness.announcer,
     adminId: ADMIN,
+    language: () => language,
   });
   harness.telegram.getUpdates.mockImplementationOnce(async () => {
     listener.stop();
@@ -69,5 +70,52 @@ describe('CommandListener: превью', () => {
     await deliver(chat({ text: '/image_clear' }));
 
     expect(harness.store.announcePhoto()).toBeNull();
+  });
+});
+
+describe('CommandListener: язык ответов', () => {
+  const lastReply = () => harness.telegram.sendTo.mock.calls.at(-1)!.at(1) as unknown as string;
+
+  it('справка и ответы на русском по умолчанию', async () => {
+    await deliver(chat({ text: '/help' }));
+    expect(lastReply()).toContain('<b>Команды</b>');
+
+    await deliver(chat({ text: '/text' }));
+    expect(lastReply()).toContain('Врезка не задана');
+  });
+
+  it('справка и ответы на английском, сами команды те же', async () => {
+    await deliver(chat({ text: '/help' }), 'en');
+    expect(lastReply()).toContain('<b>Commands</b>');
+    expect(lastReply()).toContain('/image_clear');
+
+    await deliver(chat({ text: '/text Hello <b>' }), 'en');
+    expect(lastReply()).toBe('Insert saved, it will go into the next announcement:\nHello &lt;b&gt;');
+
+    await deliver(chat({ text: '/image -' }), 'en');
+    expect(lastReply()).toContain('Custom preview cleared');
+
+    await deliver(chat({ text: '/status' }), 'en');
+    expect(lastReply()).toBe('Not live right now.');
+  });
+
+  it('язык берётся при каждом ответе, а не при создании слушателя', async () => {
+    let language = 'ru';
+    const listener = new CommandListener({
+      telegram: harness.telegram as unknown as TelegramClient,
+      store: harness.store,
+      announcer: harness.announcer,
+      adminId: ADMIN,
+      language: () => language,
+    });
+    harness.telegram.getUpdates.mockImplementationOnce(async () => {
+      language = 'en';
+      listener.stop();
+      return [{ update_id: 1, message: chat({ text: '/status' }) }] as never;
+    });
+    listener.start();
+    await vi.waitFor(() => expect(harness.store.updatesOffset()).toBe(2));
+
+    expect(lastReply()).toBe('Not live right now.');
   });
 });

@@ -62,4 +62,37 @@ describe('loadConfig', () => {
     expect(config.dryRun).toBe(true);
     expect(config.announceEnd).toBe(false);
   });
+
+  describe('DISCORD_WEBHOOK_URL', () => {
+    const hook = 'https://discord.com/api/webhooks/123456789/abc_DEF-123';
+
+    it('пусто — Discord выключен', () => {
+      expect(loadConfig(base).discord).toBeUndefined();
+      expect(loadConfig({ ...base, DISCORD_WEBHOOK_URL: '  ' }).discord).toBeUndefined();
+    });
+
+    it('принимает вебхук Discord, включая ptb, canary и discordapp.com', () => {
+      expect(loadConfig({ ...base, DISCORD_WEBHOOK_URL: hook }).discord).toEqual({ webhookUrl: hook });
+      for (const host of ['ptb.discord.com', 'canary.discord.com', 'discordapp.com']) {
+        const url = `https://${host}/api/webhooks/1/tok/`;
+        expect(loadConfig({ ...base, DISCORD_WEBHOOK_URL: url }).discord?.webhookUrl).toBe(`https://${host}/api/webhooks/1/tok`);
+      }
+    });
+
+    it.each([
+      'not a url',
+      'http://discord.com/api/webhooks/1/tok',
+      'https://example.com/api/webhooks/1/tok',
+      'https://discord.com.evil.test/api/webhooks/1/tok',
+      'https://discord.com/api/webhooks/1',
+      'https://discord.com/api/webhooks/x/tok',
+      'https://discord.com/api/webhooks/1/tok?thread_id=5',
+    ])('отклоняет %s и не раскрывает значение в ошибке', (value) => {
+      const call = () => loadConfig({ ...base, DISCORD_WEBHOOK_URL: value });
+
+      expect(call).toThrow(ConfigError);
+      expect(call).toThrow(/DISCORD_WEBHOOK_URL/);
+      expect(call).not.toThrow(/tok/);
+    });
+  });
 });

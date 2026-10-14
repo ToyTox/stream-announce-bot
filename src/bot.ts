@@ -1,6 +1,7 @@
 import { Announcer, type AnnouncerEvent } from './announcer.js';
 import { ConfigError, loadConfig, type Config, type Env } from './config.js';
 import { openDb } from './db.js';
+import { DiscordClient } from './discord/client.js';
 import { Store } from './store.js';
 import { TelegramClient } from './telegram/client.js';
 import { CommandListener } from './telegram/commands.js';
@@ -15,6 +16,8 @@ export interface Bot {
   config: Config;
   store: Store;
   telegram: TelegramClient;
+  /** Есть только при заданном DISCORD_WEBHOOK_URL. */
+  discord?: DiscordClient;
   announcer: Announcer;
   /** Внеочередная проверка; если проверка уже идёт — дожидается её. */
   tickNow(): Promise<void>;
@@ -38,22 +41,31 @@ export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => vo
     config.telegram.chatId,
     config.telegram.topicId
   );
+  const discord = config.discord ? new DiscordClient(config.discord.webhookUrl) : undefined;
   const watchers = buildWatchers(config);
-  const announcer = new Announcer({ store, watchers, telegram, config, onEvent });
+  const announcer = new Announcer({ store, watchers, telegram, discord, config, onEvent });
 
   console.log(
     `👀 Слежу за площадками: ${watchers.map((watcher) => PLATFORM_LABELS[watcher.platform]).join(', ')}`
   );
+  console.log(`📣 Площадки доставки: ${['Telegram', ...(discord ? ['Discord'] : [])].join(', ')}`);
   console.log(
     `⏱️  Опрос раз в ${Math.round(config.pollIntervalMs / 1000)} с, ` +
       `пауза перед анонсом ${Math.round(config.announceGraceMs / 1000)} с, ` +
       `окончание эфира через ${Math.round(config.offlineGraceMs / 1000)} с молчания`
   );
-  if (config.dryRun) console.log('🧪 DRY_RUN: сообщения в Telegram не уходят');
+  if (config.dryRun) console.log('🧪 DRY_RUN: сообщения в площадки доставки не уходят');
 
   let listener: CommandListener | undefined;
   if (config.telegram.adminId !== undefined) {
-    listener = new CommandListener({ telegram, store, announcer, adminId: config.telegram.adminId });
+    listener = new CommandListener({
+      telegram,
+      store,
+      announcer,
+      adminId: config.telegram.adminId,
+      // Язык меняется из панели без перезапуска бота, поэтому читается при каждом ответе.
+      language: () => config.language,
+    });
     listener.start();
     console.log('💬 Команды бота принимаются');
   } else {
@@ -81,6 +93,7 @@ export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => vo
     config,
     store,
     telegram,
+    discord,
     announcer,
     tickNow: tick,
     async stop() {
@@ -101,6 +114,8 @@ export type BotFactory = (config: Config, onEvent?: (event: AnnouncerEvent) => v
 export class Runtime {
   bot: Bot | null = null;
   configError: string | null = null;
+  /** Та же ошибка с ключом словаря — чтобы панель показала её на своём языке. */
+  configErrorSource: ConfigError | null = null;
 
   constructor(
     private readonly factory: BotFactory = startBot,
@@ -111,9 +126,11 @@ export class Runtime {
     try {
       this.bot = this.factory(loadConfig(env), this.onEvent);
       this.configError = null;
+      this.configErrorSource = null;
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
       this.configError = error.message;
+      this.configErrorSource = error;
       console.error(`❌ ${error.message}`);
     }
   }

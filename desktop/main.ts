@@ -15,8 +15,9 @@ import { join } from 'node:path';
 import type { AnnouncerEvent } from '../src/announcer.js';
 import { formatDuration } from '../src/announceTemplate.js';
 import { startApp, type App } from '../src/app.js';
+import { languageFromEnv, setSystemLocale, t } from '../src/i18n/index.js';
 import { captureConsole } from '../src/log.js';
-import { PLATFORM_LABELS } from '../src/types.js';
+import { trayStatus, type IconState, type TrayStatus } from './trayStatus.js';
 import { startUpdateChecks, type UpdateInfo } from './updates.js';
 
 /**
@@ -24,6 +25,7 @@ import { startUpdateChecks, type UpdateInfo } from './updates.js';
  * окно — это та же веб-панель. Закрытие окна только прячет его.
  */
 
+/** Имя приложения для ОС (процесс, Dock) — не переводится; в окнах и трее — t('app.name'). */
 const APP_NAME = 'Анонсы стримов';
 const REFRESH_MS = 5000;
 const ASSETS = join(app.getAppPath(), 'desktop', 'assets');
@@ -38,8 +40,6 @@ if (isWindows) app.setAppUserModelId(APP_ID);
 if (process.env.STREAM_BOT_USER_DATA) app.setPath('userData', process.env.STREAM_BOT_USER_DATA);
 
 captureConsole();
-
-type IconState = 'idle' | 'live' | 'warning' | 'stopped';
 
 interface DesktopSettings {
   launchAtLogin: boolean;
@@ -92,6 +92,11 @@ function applySettings(): void {
   }
 }
 
+/** Язык интерфейса: APP_LANGUAGE из настроек панели, иначе язык системы. */
+function lang(): string {
+  return languageFromEnv(core?.env ?? {});
+}
+
 // ---------- Окно ----------
 
 function createWindow(url: string): BrowserWindow {
@@ -128,7 +133,7 @@ function createWindow(url: string): BrowserWindow {
 
 function showWindow(hash = ''): void {
   if (!core?.panelUrl) {
-    dialog.showErrorBox(APP_NAME, 'Панель не запустилась — подробности в логе. Перезапустите приложение.');
+    dialog.showErrorBox(t(lang(), 'app.name'), t(lang(), 'tray.panelFailed'));
     return;
   }
   if (isMac) void app.dock?.show();
@@ -143,34 +148,23 @@ function showWindow(hash = ''): void {
 
 // ---------- Трей ----------
 
-interface TrayStatus {
-  state: IconState;
-  lines: string[];
-}
-
-function clock(ms: number): string {
-  return new Date(ms).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-}
-
 function currentStatus(): TrayStatus {
   const bot = core?.runtime.bot;
+  const language = lang();
   if (!bot) {
-    const reason = core?.runtime.configError ?? 'неизвестная ошибка';
-    return { state: 'stopped', lines: [`Бот не запущен: ${reason.length > 90 ? `${reason.slice(0, 90)}…` : reason}`] };
+    const configError = core?.runtime.configErrorSource?.localize(language) ?? core?.runtime.configError ?? null;
+    return trayStatus(null, configError, language);
   }
-
   const broadcast = bot.announcer.status();
-  const failed = bot.announcer.platformStates().filter((item) => item.state === 'error');
-  const live = broadcast
-    ? `● Эфир идёт с ${clock(broadcast.startedAt)} · ${broadcast.platforms.map((p) => PLATFORM_LABELS[p]).join(', ')}`
-    : 'Эфира нет';
-
-  const lines = [bot.config.dryRun ? (broadcast ? `Тестовый режим · ${live}` : 'Тестовый режим') : live];
-  if (failed.length > 0) lines.push(`Ошибка проверки: ${failed.map((item) => PLATFORM_LABELS[item.platform]).join(', ')}`);
-
-  let state: IconState = broadcast ? 'live' : 'idle';
-  if (bot.config.dryRun || failed.length > 0) state = 'warning';
-  return { state, lines };
+  return trayStatus(
+    {
+      dryRun: bot.config.dryRun,
+      broadcast: broadcast && { startedAt: broadcast.startedAt, platforms: broadcast.platforms },
+      failed: bot.announcer.platformStates().filter((item) => item.state === 'error').map((item) => item.platform),
+    },
+    null,
+    language
+  );
 }
 
 function trayIcon(state: IconState): Electron.NativeImage {
@@ -179,19 +173,20 @@ function trayIcon(state: IconState): Electron.NativeImage {
 }
 
 function buildMenu(status: TrayStatus): Menu {
+  const language = lang();
   const template: MenuItemConstructorOptions[] = [
     ...status.lines.map((label): MenuItemConstructorOptions => ({ label, enabled: false })),
     { type: 'separator' },
-    { label: 'Открыть панель', click: () => showWindow() },
+    { label: t(language, 'tray.openPanel'), click: () => showWindow() },
     {
-      label: 'Проверить сейчас',
+      label: t(language, 'tray.checkNow'),
       enabled: Boolean(core?.runtime.bot),
       click: () => void core?.runtime.bot?.tickNow().then(refreshTray),
     },
     { type: 'separator' },
     app.isPackaged
       ? {
-          label: 'Запускать при входе в систему',
+          label: t(language, 'tray.launchAtLogin'),
           type: 'checkbox',
           checked: settings.launchAtLogin,
           click: (item) => {
@@ -200,9 +195,9 @@ function buildMenu(status: TrayStatus): Menu {
             applySettings();
           },
         }
-      : { label: 'Автозапуск — работает в установленном приложении', enabled: false },
+      : { label: t(language, 'tray.launchAtLoginDev'), enabled: false },
     {
-      label: 'Не давать системе засыпать',
+      label: t(language, 'tray.preventSleep'),
       type: 'checkbox',
       checked: settings.preventSleep,
       click: (item) => {
@@ -215,13 +210,13 @@ function buildMenu(status: TrayStatus): Menu {
     ...(availableUpdate
       ? [
           {
-            label: `Доступна версия ${availableUpdate.version} — скачать`,
+            label: t(language, 'tray.updateAvailable', { version: availableUpdate.version }),
             click: () => void shell.openExternal(availableUpdate!.url),
           } satisfies MenuItemConstructorOptions,
         ]
       : []),
-    { label: `Версия ${app.getVersion()}`, enabled: false },
-    { label: 'Выйти', click: () => app.quit() },
+    { label: t(language, 'tray.version', { version: app.getVersion() }), enabled: false },
+    { label: t(language, 'tray.quit'), click: () => app.quit() },
   ];
   return Menu.buildFromTemplate(template);
 }
@@ -230,11 +225,11 @@ function refreshTray(): void {
   if (!tray) return;
   const status = currentStatus();
   // Меню пересобираем только при изменениях: открытое меню на macOS при замене закрывается.
-  const key = `${status.state}|${status.lines.join('|')}|${Boolean(core?.runtime.bot)}|${availableUpdate?.version ?? ''}`;
+  const key = `${lang()}|${status.state}|${status.lines.join('|')}|${Boolean(core?.runtime.bot)}|${availableUpdate?.version ?? ''}`;
   if (key === lastTrayKey) return;
   lastTrayKey = key;
   tray.setImage(trayIcon(status.state));
-  tray.setToolTip(`${APP_NAME}\n${status.lines.join('\n')}`);
+  tray.setToolTip(`${t(lang(), 'app.name')}\n${status.lines.join('\n')}`);
   tray.setContextMenu(buildMenu(status));
 }
 
@@ -242,14 +237,18 @@ function refreshTray(): void {
 
 function notify(event: AnnouncerEvent): void {
   if (!Notification.isSupported()) return;
+  const language = lang();
   const text = (() => {
     switch (event.type) {
       case 'announced':
-        return { title: 'Анонс отправлен', body: event.platforms.join(', ') };
+        return { title: t(language, 'notify.announced'), body: event.platforms.join(', ') };
       case 'finished':
-        return { title: 'Эфир завершён', body: `Длился ${formatDuration(event.durationMs)}` };
+        return {
+          title: t(language, 'notify.finished'),
+          body: t(language, 'notify.finishedBody', { duration: formatDuration(event.durationMs, language) }),
+        };
       case 'announce_failed':
-        return { title: 'Не удалось отправить анонс', body: event.error };
+        return { title: t(language, 'notify.announceFailed', { channel: event.channel }), body: event.error };
     }
   })();
   new Notification(text).show();
@@ -261,7 +260,10 @@ function onUpdate(info: UpdateInfo): void {
   refreshTray();
   // Уведомляем один раз на версию, а не при каждой суточной проверке.
   if (first && Notification.isSupported()) {
-    new Notification({ title: 'Доступна новая версия', body: `Версия ${info.version} — откройте меню в трее, чтобы скачать` }).show();
+    new Notification({
+      title: t(lang(), 'notify.updateTitle'),
+      body: t(lang(), 'notify.updateBody', { version: info.version }),
+    }).show();
   }
 }
 
@@ -273,6 +275,8 @@ async function main(): Promise<void> {
   const envPath = join(dataDir, '.env');
   const firstRun = !existsSync(envPath);
 
+  // Язык системы нужен до запуска бота: по нему выбирается язык, если APP_LANGUAGE пуст.
+  setSystemLocale(app.getLocale());
   loadSettings();
   applySettings();
 
@@ -288,7 +292,10 @@ async function main(): Promise<void> {
       onEvent: notify,
     });
   } catch (error) {
-    dialog.showErrorBox(APP_NAME, `Не удалось запустить: ${error instanceof Error ? error.message : String(error)}`);
+    dialog.showErrorBox(
+      t(languageFromEnv({}), 'app.name'),
+      t(languageFromEnv({}), 'tray.startFailed', { error: error instanceof Error ? error.message : String(error) })
+    );
     app.exit(1);
     return;
   }

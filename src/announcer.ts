@@ -1,6 +1,16 @@
-import { renderAnnounce, renderFinished, ChannelLink } from './announceTemplate.js';
+import {
+  renderAnnounce,
+  renderDiscordAnnounce,
+  renderDiscordFinished,
+  renderFinished,
+  AnnounceInput,
+  ChannelLink,
+  FinishedInput,
+} from './announceTemplate.js';
 import type { Config } from './config.js';
-import { Store } from './store.js';
+import { DiscordClient, DiscordError } from './discord/client.js';
+import { t } from './i18n/index.js';
+import { Store, type DeliveryRow } from './store.js';
 import { TelegramClient, TelegramError } from './telegram/client.js';
 import { LiveStream, PLATFORMS, PLATFORM_LABELS, Platform } from './types.js';
 import type { BaseWatcher } from './watchers/base.js';
@@ -16,12 +26,15 @@ import { CHANNEL_BASE as VK_LIVE_BASE } from './watchers/vkvideo.js';
 export type AnnouncerEvent =
   | { type: 'announced'; platforms: string[] }
   | { type: 'finished'; durationMs: number }
-  | { type: 'announce_failed'; error: string };
+  /** channel — площадка, которая не получила анонс (например, «Discord»). */
+  | { type: 'announce_failed'; channel: string; error: string };
 
 export interface AnnouncerDeps {
   store: Store;
   watchers: BaseWatcher[];
   telegram: TelegramClient;
+  /** Есть только при заданном DISCORD_WEBHOOK_URL. */
+  discord?: DiscordClient;
   config: Config;
   /** Подменяется в тестах, чтобы гонять grace-периоды без ожидания. */
   now?: () => number;
@@ -42,6 +55,135 @@ export interface BroadcastStatus {
   chatId: string | null;
   messageId: number | null;
   platforms: Platform[];
+  /** Состояние доставки по площадкам (Telegram, Discord). */
+  deliveries: Array<{ channel: string; label: string; state: DeliveryRow['state'] }>;
+}
+
+/** Что нужно площадке, чтобы собрать анонс: Telegram и Discord берут картинку по-разному. */
+interface AnnounceRequest {
+  input: AnnounceInput;
+  /** Своя картинка из /image: file_id существует только внутри Telegram. */
+  customPhoto: string | null;
+  /** Превью приоритетной площадки — обычный URL, годится всем. */
+  thumbnailUrl?: string | null;
+}
+
+/** Куда ушло сообщение: id сообщения и, если есть, адресат (чат). */
+interface Sent {
+  messageId: string | null;
+  target: string | null;
+}
+
+interface Prepared<T> {
+  /** Итоговый текст — для лога в DRY_RUN. */
+  text: string;
+  send(): Promise<T>;
+}
+
+/**
+ * Площадка доставки. Announcer не знает, какая она: у всех одинаковый путь —
+ * подготовить сообщение, отправить, записать результат по своей площадке.
+ */
+interface DeliveryChannel {
+  /** Ключ в базе. */
+  id: string;
+  label: string;
+  /** Постоянная ошибка: повторять бессмысленно. */
+  isPermanent(error: unknown): boolean;
+  /** Постоянная ошибка останавливает проверку (неверная настройка, которую надо чинить), а не только эту площадку. */
+  throwOnPermanent: boolean;
+  prepareAnnounce(request: AnnounceRequest): Prepared<Sent>;
+  prepareFinished(input: FinishedInput): Prepared<void>;
+}
+
+class TelegramChannel implements DeliveryChannel {
+  readonly id = 'telegram';
+  readonly label = 'Telegram';
+  readonly throwOnPermanent = true;
+
+  constructor(
+    private readonly client: TelegramClient,
+    private readonly chatId: string
+  ) {}
+
+  isPermanent(error: unknown): boolean {
+    return error instanceof TelegramError && !error.retriable;
+  }
+
+  prepareAnnounce({ input, customPhoto, thumbnailUrl }: AnnounceRequest): Prepared<Sent> {
+    const text = renderAnnounce(input);
+    // Своя картинка из лички важнее превью Twitch; живёт, пока её не сбросят через /image -.
+    const photo = customPhoto ?? thumbnailUrl;
+    return {
+      text,
+      send: async () => {
+        const message = photo
+          ? await this.sendWithPhotoFallback(photo, text)
+          : await this.client.sendMessage(text);
+        return { messageId: String(message.message_id), target: this.chatId };
+      },
+    };
+  }
+
+  prepareFinished(input: FinishedInput): Prepared<void> {
+    const text = renderFinished(input);
+    return {
+      text,
+      send: async () => {
+        await this.client.sendMessage(text);
+      },
+    };
+  }
+
+  /** Превью может не подгрузиться на стороне Telegram — тогда шлём текстом. */
+  private async sendWithPhotoFallback(photo: string, caption: string) {
+    try {
+      return await this.client.sendPhoto(photo, caption);
+    } catch (error) {
+      if (error instanceof TelegramError && error.code === 'upstream') {
+        console.warn('⚠️  Превью не ушло, отправляю текстом:', error.message);
+        return this.client.sendMessage(caption);
+      }
+      throw error;
+    }
+  }
+}
+
+class DiscordChannel implements DeliveryChannel {
+  readonly id = 'discord';
+  readonly label = 'Discord';
+  readonly throwOnPermanent = false;
+
+  constructor(private readonly client: DiscordClient) {}
+
+  isPermanent(error: unknown): boolean {
+    return error instanceof DiscordError && !error.retriable;
+  }
+
+  prepareAnnounce({ input, thumbnailUrl }: AnnounceRequest): Prepared<Sent> {
+    const text = renderDiscordAnnounce(input);
+    // file_id из /image Discord не прочитает; без http(s)-превью сообщение уходит без картинки.
+    const image = thumbnailUrl && /^https?:\/\//i.test(thumbnailUrl) ? { url: thumbnailUrl } : undefined;
+    return {
+      text,
+      send: async () => {
+        const message = await this.client.send({
+          embeds: [{ description: text, ...(image ? { image } : {}) }],
+        });
+        return { messageId: message.id, target: null };
+      },
+    };
+  }
+
+  prepareFinished(input: FinishedInput): Prepared<void> {
+    const text = renderDiscordFinished(input);
+    return {
+      text,
+      send: async () => {
+        await this.client.send({ embeds: [{ description: text }] });
+      },
+    };
+  }
 }
 
 type ProbeResult =
@@ -74,7 +216,7 @@ export function channelUrl(config: Config, platform: Platform): string | undefin
 export class Announcer {
   private readonly store: Store;
   private readonly watchers: BaseWatcher[];
-  private readonly telegram: TelegramClient;
+  private readonly channels: DeliveryChannel[];
   private readonly config: Config;
   private readonly now: () => number;
   private readonly onEvent?: (event: AnnouncerEvent) => void;
@@ -83,7 +225,8 @@ export class Announcer {
   constructor(deps: AnnouncerDeps) {
     this.store = deps.store;
     this.watchers = deps.watchers;
-    this.telegram = deps.telegram;
+    this.channels = [new TelegramChannel(deps.telegram, deps.config.telegram.chatId)];
+    if (deps.discord) this.channels.push(new DiscordChannel(deps.discord));
     this.config = deps.config;
     this.now = deps.now ?? (() => Date.now());
     this.onEvent = deps.onEvent;
@@ -148,8 +291,10 @@ export class Announcer {
 
     // Анонс — снимок площадок на момент отправки: после неё сообщение не правим,
     // даже если площадка упала или подключилась позже.
-    if (fresh.announcedAt === null && now - fresh.startedAt >= this.config.announceGraceMs) {
-      // Ждём остальные площадки: OBS поднимает их с разницей в десятки секунд.
+    const started = this.store.deliveriesOf(fresh.id).length > 0;
+    // Ждём остальные площадки: OBS поднимает их с разницей в десятки секунд.
+    // Когда доставка начата, grace уже позади: недоставленные площадки повторяются каждый тик.
+    if (started || now - fresh.startedAt >= this.config.announceGraceMs) {
       await this.announce(fresh.id, now);
     }
   }
@@ -204,59 +349,78 @@ export class Announcer {
     const links = this.links(broadcastId);
     if (links.length === 0) return;
 
-    const customText = this.store.announceText();
-    // Своя картинка из лички важнее превью Twitch; живёт, пока её не сбросят через /image -.
-    const photo = this.store.announcePhoto() ?? source?.thumbnailUrl;
-    const text = renderAnnounce({
-      title: source?.title ?? 'Трансляция',
-      game: source?.game,
-      customText,
-      links,
-    });
-
-    if (this.config.dryRun) {
-      console.log('🧪 DRY_RUN, сообщение не отправлено:\n' + text);
-      this.store.markAnnounced(broadcastId, now, this.config.telegram.chatId, null, customText);
-      this.store.clearAnnounceText();
-      this.emit({ type: 'announced', platforms: this.store.liveStreamsOf(broadcastId).map((stream) => PLATFORM_LABELS[stream.platform]) });
-      return;
-    }
-
-    try {
-      const message = photo
-        ? await this.sendWithPhotoFallback(photo, text)
-        : await this.telegram.sendMessage(text);
-
-      this.store.markAnnounced(
+    // Площадки фиксируются на первой попытке: добавленная позже догоняющего анонса не получит.
+    if (this.store.deliveriesOf(broadcastId).length === 0) {
+      this.store.startDeliveries(
         broadcastId,
-        now,
-        this.config.telegram.chatId,
-        message.message_id,
-        customText
+        this.channels.map((channel) => channel.id)
       );
-      this.store.clearAnnounceText();
-      console.log(`✅ Анонс отправлен: ${links.map((link) => link.label).join(', ')}`);
-      this.emit({ type: 'announced', platforms: this.store.liveStreamsOf(broadcastId).map((stream) => PLATFORM_LABELS[stream.platform]) });
-    } catch (error) {
-      // Анонс не отмечен отправленным — попробуем в следующем тике.
-      const message = error instanceof TelegramError ? error.message : String(error);
-      console.error('❌ Не удалось отправить анонс:', message);
-      this.emit({ type: 'announce_failed', error: message });
-      if (error instanceof TelegramError && !error.retriable) throw error;
     }
+    const rows = this.store.deliveriesOf(broadcastId);
+    const pending = this.channels.filter((channel) =>
+      rows.some((row) => row.channel === channel.id && row.state === 'pending')
+    );
+    if (pending.length === 0) return;
+
+    // До первой доставки врезка живая, после — зафиксированная: повтор для другой площадки не должен подхватить новую /text.
+    const broadcast = this.store.openBroadcast();
+    const customText = broadcast && broadcast.announcedAt !== null ? broadcast.announceText : this.store.announceText();
+    const request: AnnounceRequest = {
+      input: {
+        title: source?.title ?? t(this.config.announceLanguage, 'announce.fallbackTitle'),
+        game: source?.game,
+        customText,
+        links,
+        language: this.config.announceLanguage,
+      },
+      customPhoto: this.store.announcePhoto(),
+      thumbnailUrl: source?.thumbnailUrl,
+    };
+
+    let fatal: unknown;
+    for (const channel of pending) {
+      const prepared = channel.prepareAnnounce(request);
+
+      if (this.config.dryRun) {
+        console.log(`🧪 DRY_RUN, сообщение в ${channel.label} не отправлено:\n` + prepared.text);
+        this.recordAnnounced(broadcastId, channel, now, { messageId: null, target: null }, customText);
+        continue;
+      }
+
+      try {
+        const sent = await prepared.send();
+        this.recordAnnounced(broadcastId, channel, now, sent, customText);
+        console.log(`✅ Анонс отправлен (${channel.label}): ${links.map((link) => link.label).join(', ')}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`❌ Не удалось отправить анонс (${channel.label}):`, message);
+        this.emit({ type: 'announce_failed', channel: channel.label, error: message });
+        if (!channel.isPermanent(error)) continue; // не отмечена — попробуем в следующем тике
+        if (channel.throwOnPermanent) fatal ??= error;
+        else this.store.markDeliveryFailed(broadcastId, channel.id, message);
+      }
+    }
+
+    if (fatal) throw fatal;
   }
 
-  /** Превью может не подгрузиться на стороне Telegram — тогда шлём текстом. */
-  private async sendWithPhotoFallback(photo: string, caption: string) {
-    try {
-      return await this.telegram.sendPhoto(photo, caption);
-    } catch (error) {
-      if (error instanceof TelegramError && error.code === 'upstream') {
-        console.warn('⚠️  Превью не ушло, отправляю текстом:', error.message);
-        return this.telegram.sendMessage(caption);
-      }
-      throw error;
-    }
+  /** Записывает доставку; первая успешная запускает «анонсирован»: врезка гаснет, приложение получает событие. */
+  private recordAnnounced(
+    broadcastId: number,
+    channel: DeliveryChannel,
+    now: number,
+    sent: Sent,
+    customText: string | null
+  ): void {
+    const first = this.store.openBroadcast()?.announcedAt === null;
+    this.store.markDelivered(broadcastId, channel.id, now, sent.messageId, sent.target);
+    if (!first) return;
+    this.store.markAnnounced(broadcastId, now, customText);
+    this.store.clearAnnounceText();
+    this.emit({
+      type: 'announced',
+      platforms: this.store.liveStreamsOf(broadcastId).map((stream) => PLATFORM_LABELS[stream.platform]),
+    });
   }
 
   private async finishBroadcast(broadcastId: number, now: number): Promise<void> {
@@ -270,27 +434,37 @@ export class Announcer {
 
     // Без хвоста offlineGraceMs: эфир кончился, когда площадки замолчали, а не когда мы это признали.
     const durationMs = broadcast.lastLiveAt - broadcast.startedAt;
-    const text = renderFinished({
-      title: source?.title ?? 'Трансляция',
+    const input: FinishedInput = {
+      title: source?.title ?? t(this.config.announceLanguage, 'announce.fallbackTitle'),
       game: source?.game,
       durationMs,
       links: this.channelLinks(),
-    });
+      language: this.config.announceLanguage,
+    };
 
-    if (this.config.dryRun) {
-      console.log('🧪 DRY_RUN, итог эфира не отправлен:\n' + text);
-      this.emit({ type: 'finished', durationMs });
-      return;
-    }
+    // Итог идёт только туда, куда дошёл анонс; каждая площадка независимо и без повторов.
+    const delivered = this.store.deliveriesOf(broadcastId).filter((row) => row.state === 'sent');
+    let sentAny = false;
+    for (const channel of this.channels) {
+      if (!delivered.some((row) => row.channel === channel.id)) continue;
+      const prepared = channel.prepareFinished(input);
 
-    try {
-      await this.telegram.sendMessage(text);
-      console.log('✅ Итог эфира отправлен');
-      this.emit({ type: 'finished', durationMs });
-    } catch (error) {
-      const message = error instanceof TelegramError ? error.message : String(error);
-      console.error('❌ Не удалось отправить итог эфира:', message);
+      if (this.config.dryRun) {
+        console.log(`🧪 DRY_RUN, итог эфира в ${channel.label} не отправлен:\n` + prepared.text);
+        sentAny = true;
+        continue;
+      }
+
+      try {
+        await prepared.send();
+        console.log(`✅ Итог эфира отправлен (${channel.label})`);
+        sentAny = true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`❌ Не удалось отправить итог эфира (${channel.label}):`, message);
+      }
     }
+    if (sentAny) this.emit({ type: 'finished', durationMs });
   }
 
   /** Ссылки на каналы для итогового сообщения — по настроенным площадкам, а не по тем, что были в эфире. */
@@ -310,12 +484,18 @@ export class Announcer {
   status(): BroadcastStatus | null {
     const broadcast = this.store.openBroadcast();
     if (!broadcast) return null;
+    const deliveries = this.store.deliveriesOf(broadcast.id);
+    const telegram = deliveries.find((row) => row.channel === 'telegram' && row.state === 'sent');
     return {
       startedAt: broadcast.startedAt,
       announcedAt: broadcast.announcedAt,
-      chatId: broadcast.chatId,
-      messageId: broadcast.messageId,
+      chatId: telegram?.target ?? null,
+      messageId: telegram?.messageId ? Number(telegram.messageId) : null,
       platforms: this.store.liveStreamsOf(broadcast.id).map((stream) => stream.platform),
+      deliveries: this.channels.flatMap((channel) => {
+        const row = deliveries.find((item) => item.channel === channel.id);
+        return row ? [{ channel: channel.id, label: channel.label, state: row.state }] : [];
+      }),
     };
   }
 
@@ -334,17 +514,19 @@ export class Announcer {
   preview(): { announce: string; finished: string } {
     const broadcast = this.store.openBroadcast();
     const source = broadcast ? this.source(broadcast.id) : undefined;
-    const title = source?.title ?? 'Название стрима на Twitch';
-    const game = source ? source.game : 'Игра на Twitch';
+    const language = this.config.announceLanguage;
+    const title = source?.title ?? t(language, 'announce.sampleTitle');
+    const game = source ? source.game : t(language, 'announce.sampleGame');
     const links = this.channelLinks();
 
     return {
-      announce: renderAnnounce({ title, game, customText: this.store.announceText(), links }),
+      announce: renderAnnounce({ title, game, customText: this.store.announceText(), links, language }),
       finished: renderFinished({
         title,
         game,
         durationMs: broadcast ? this.now() - broadcast.startedAt : (2 * 60 + 47) * 60_000,
         links,
+        language,
       }),
     };
   }

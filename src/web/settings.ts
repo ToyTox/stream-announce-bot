@@ -1,45 +1,57 @@
 import type { Env } from '../config.js';
+import { DEFAULT_LANGUAGE, languageOptions, t, type Lang } from '../i18n/index.js';
 
 /**
  * Описание полей формы настроек. Панель рисует форму по этому списку,
- * так что новая настройка добавляется одной строкой здесь.
+ * так что новая настройка добавляется одной строкой здесь и ключами в словарях:
+ * подпись — setting.<KEY>.label, подсказка (если hint) — setting.<KEY>.hint.
  */
 
 export type FieldType = 'text' | 'number' | 'bool' | 'select';
 
 export interface SettingField {
   key: string;
+  /** Идентификатор группы; подпись — settings.group.<group>. */
   group: string;
-  label: string;
   type: FieldType;
-  hint?: string;
+  /** Есть ли подсказка в словаре. */
+  hint?: boolean;
   /** Значение не отдаётся в браузер целиком; пустое поле при сохранении — «не менять». */
   secret?: boolean;
-  options?: Array<{ value: string; label: string }>;
+  /** label — готовая подпись (названия площадок), labelKey — ключ словаря. */
+  options?: Array<{ value: string; label?: string; labelKey?: string }>;
   /** Значение по умолчанию из loadConfig — чтобы форма показывала, что реально действует. */
   placeholder?: string;
 }
 
+/** Пустое значение — «авто» (язык системы) или «как у интерфейса», дальше — по языку из каждого словаря. */
+function languageChoices(emptyLabelKey: string): NonNullable<SettingField['options']> {
+  return [{ value: '', labelKey: emptyLabelKey }, ...languageOptions().map(({ code, name }) => ({ value: code, label: name }))];
+}
+
 export const SETTING_FIELDS: SettingField[] = [
-  { key: 'TELEGRAM_BOT_TOKEN', group: 'Telegram', label: 'Токен бота', type: 'text', secret: true, hint: 'Выдаёт @BotFather' },
-  { key: 'TELEGRAM_CHAT_ID', group: 'Telegram', label: 'ID группы', type: 'text', hint: 'Для ссылки t.me/c/2241331974/… это -1002241331974' },
-  { key: 'TELEGRAM_TOPIC_ID', group: 'Telegram', label: 'ID темы', type: 'number', hint: 'Пусто — основная тема (General)' },
-  { key: 'TELEGRAM_ADMIN_ID', group: 'Telegram', label: 'Ваш user ID', type: 'number', hint: 'Только от него бот принимает команды; нужен и для загрузки превью из панели' },
+  { key: 'TELEGRAM_BOT_TOKEN', group: 'telegram', type: 'text', secret: true, hint: true },
+  { key: 'TELEGRAM_CHAT_ID', group: 'telegram', type: 'text', hint: true },
+  { key: 'TELEGRAM_TOPIC_ID', group: 'telegram', type: 'number', hint: true },
+  { key: 'TELEGRAM_ADMIN_ID', group: 'telegram', type: 'number', hint: true },
 
-  { key: 'TWITCH_LOGIN', group: 'Twitch', label: 'Логин', type: 'text', hint: 'Как в адресе twitch.tv/<логин>' },
-  { key: 'TWITCH_CLIENT_ID', group: 'Twitch', label: 'Client ID', type: 'text', hint: 'Из приложения на dev.twitch.tv' },
-  { key: 'TWITCH_CLIENT_SECRET', group: 'Twitch', label: 'Client Secret', type: 'text', secret: true },
+  { key: 'DISCORD_WEBHOOK_URL', group: 'discord', type: 'text', secret: true, hint: true },
 
-  { key: 'YOUTUBE_CHANNEL_ID', group: 'YouTube', label: 'ID канала', type: 'text', hint: 'Начинается с UC, 24 символа' },
-  { key: 'YOUTUBE_API_KEY', group: 'YouTube', label: 'API-ключ', type: 'text', secret: true, hint: 'Необязательно: без ключа бот читает страницу /live' },
+  { key: 'TWITCH_LOGIN', group: 'twitch', type: 'text', hint: true },
+  { key: 'TWITCH_CLIENT_ID', group: 'twitch', type: 'text', hint: true },
+  { key: 'TWITCH_CLIENT_SECRET', group: 'twitch', type: 'text', secret: true },
 
-  { key: 'VKVIDEO_CHANNEL', group: 'VK', label: 'Канал VK Live', type: 'text', hint: 'Имя из адреса live.vkvideo.ru/<имя>' },
-  { key: 'VKVIDEO_REPLAY_URL', group: 'VK', label: 'Ссылка на VK Video', type: 'text', hint: 'Канал с записями на vkvideo.ru — для анонса и итога эфира' },
+  { key: 'YOUTUBE_CHANNEL_ID', group: 'youtube', type: 'text', hint: true },
+  { key: 'YOUTUBE_API_KEY', group: 'youtube', type: 'text', secret: true, hint: true },
 
+  { key: 'VKVIDEO_CHANNEL', group: 'vk', type: 'text', hint: true },
+  { key: 'VKVIDEO_REPLAY_URL', group: 'vk', type: 'text', hint: true },
+
+  { key: 'APP_LANGUAGE', group: 'behavior', type: 'select', hint: true, options: languageChoices('settings.language.auto') },
+  { key: 'ANNOUNCE_LANGUAGE', group: 'behavior', type: 'select', hint: true, options: languageChoices('settings.language.sameAsUi') },
   {
     key: 'PRIMARY_PLATFORM',
-    group: 'Поведение',
-    label: 'Название, игра и превью берутся с',
+    group: 'behavior',
     type: 'select',
     options: [
       { value: 'twitch', label: 'Twitch' },
@@ -48,62 +60,60 @@ export const SETTING_FIELDS: SettingField[] = [
     ],
     placeholder: 'twitch',
   },
-  { key: 'POLL_INTERVAL_MS', group: 'Поведение', label: 'Опрос площадок, мс', type: 'number', placeholder: '60000' },
-  { key: 'ANNOUNCE_GRACE_MS', group: 'Поведение', label: 'Пауза перед анонсом, мс', type: 'number', placeholder: '90000', hint: 'Ждём, пока подключатся остальные площадки из OBS' },
-  { key: 'OFFLINE_GRACE_MS', group: 'Поведение', label: 'Окончание эфира после молчания, мс', type: 'number', placeholder: '180000' },
-  { key: 'ANNOUNCE_END', group: 'Поведение', label: 'Сообщение об окончании эфира', type: 'bool', placeholder: 'true' },
-  { key: 'DRY_RUN', group: 'Поведение', label: 'Тестовый режим (ничего не отправлять)', type: 'bool', placeholder: 'false' },
+  { key: 'POLL_INTERVAL_MS', group: 'behavior', type: 'number', placeholder: '60000' },
+  { key: 'ANNOUNCE_GRACE_MS', group: 'behavior', type: 'number', placeholder: '90000', hint: true },
+  { key: 'OFFLINE_GRACE_MS', group: 'behavior', type: 'number', placeholder: '180000' },
+  { key: 'ANNOUNCE_END', group: 'behavior', type: 'bool', placeholder: 'true' },
+  { key: 'DRY_RUN', group: 'behavior', type: 'bool', placeholder: 'false' },
 ];
 
 export interface GroupGuide {
   group: string;
+  /** Ключи словаря: guide.<группа>.<номер>. */
   steps: string[];
   /** Внешние ссылки — только абсолютные https. */
   links?: Array<{ label: string; url: string }>;
 }
 
+const steps = (group: string, count: number): string[] =>
+  Array.from({ length: count }, (_, index) => `guide.${group}.${index + 1}`);
+
 /** Пошаговые инструкции по группам: по смыслу совпадают с разделом «Настройка бота» в README. */
 export const SETTING_GUIDES: GroupGuide[] = [
   {
-    group: 'Telegram',
-    steps: [
-      'Напишите @BotFather команду /newbot и получите токен — вставьте его в поле «Токен бота».',
-      'Добавьте бота в группу. Права администратора не обязательны, если в группе не запрещено писать участникам.',
-      'ID группы: скопируйте ссылку на любое сообщение группы — t.me/c/2241331974/… — и добавьте -100 перед числом: -1002241331974.',
-      'ID темы: если в группе включены темы, это первое число после ID группы в ссылке на сообщение из неё. Для основной темы (General, даже переименованной) оставьте поле пустым.',
-      'Ваш user ID: напишите @userinfobot, он ответит вашим ID. Затем отправьте своему боту /start — без этого он не сможет писать вам в личку.',
-    ],
+    group: 'telegram',
+    steps: steps('telegram', 5),
     links: [
       { label: '@BotFather', url: 'https://t.me/BotFather' },
       { label: '@userinfobot', url: 'https://t.me/userinfobot' },
     ],
   },
+  { group: 'discord', steps: steps('discord', 4) },
   {
-    group: 'Twitch',
-    steps: [
-      'Создайте приложение на dev.twitch.tv/console/apps: Redirect URL — https://localhost, тип клиента — «Конфиденциально».',
-      'Скопируйте Client ID и Client Secret в поля ниже.',
-      'Логин — как в адресе twitch.tv/<логин>.',
-    ],
+    group: 'twitch',
+    steps: steps('twitch', 3),
     links: [{ label: 'dev.twitch.tv/console/apps', url: 'https://dev.twitch.tv/console/apps' }],
   },
   {
-    group: 'YouTube',
-    steps: [
-      'ID канала вида UC… возьмите на странице youtube.com/account_advanced. Ник @… не подходит.',
-      'API-ключ необязателен: без него бот читает страницу /live.',
-    ],
+    group: 'youtube',
+    steps: steps('youtube', 2),
     links: [{ label: 'youtube.com/account_advanced', url: 'https://www.youtube.com/account_advanced' }],
   },
   {
-    group: 'VK',
-    steps: [
-      'Канал VK Live: имя из адреса live.vkvideo.ru/<имя>.',
-      'Для ссылки на записи укажите канал на vkvideo.ru.',
-    ],
+    group: 'vk',
+    steps: steps('vk', 2),
     links: [{ label: 'vkvideo.ru', url: 'https://vkvideo.ru' }],
   },
 ];
+
+/** Инструкции с готовыми текстами на языке; group — подпись группы, как у полей. */
+export function settingGuides(lang: Lang = DEFAULT_LANGUAGE): GroupGuide[] {
+  return SETTING_GUIDES.map((guide) => ({
+    ...guide,
+    group: t(lang, `settings.group.${guide.group}`),
+    steps: guide.steps.map((key) => t(lang, key)),
+  }));
+}
 
 const FIELDS_BY_KEY = new Map(SETTING_FIELDS.map((field) => [field.key, field]));
 
@@ -112,16 +122,32 @@ export function maskSecret(value: string): string {
   return `${value.slice(0, 4)}…${value.slice(-3)}`;
 }
 
-export interface FieldView extends SettingField {
+/** Поле для браузера: тексты уже на нужном языке, group — подпись группы. */
+export interface FieldView {
+  key: string;
+  group: string;
+  label: string;
+  type: FieldType;
+  hint?: string;
+  secret?: boolean;
+  options?: Array<{ value: string; label: string }>;
+  placeholder?: string;
   value: string;
   isSet: boolean;
 }
 
-export function settingsView(env: Env): FieldView[] {
+export function settingsView(env: Env, lang: Lang = DEFAULT_LANGUAGE): FieldView[] {
   return SETTING_FIELDS.map((field) => {
     const raw = env[field.key]?.trim() ?? '';
+    const { hint, options, group, ...rest } = field;
     return {
-      ...field,
+      ...rest,
+      group: t(lang, `settings.group.${group}`),
+      label: t(lang, `setting.${field.key}.label`),
+      ...(hint ? { hint: t(lang, `setting.${field.key}.hint`) } : {}),
+      ...(options
+        ? { options: options.map((option) => ({ value: option.value, label: option.label ?? t(lang, option.labelKey ?? '') })) }
+        : {}),
       isSet: raw !== '',
       value: field.secret && raw !== '' ? maskSecret(raw) : raw,
     };

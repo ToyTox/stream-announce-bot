@@ -6,6 +6,7 @@ import { Announcer, type AnnouncerEvent } from '../../src/announcer.js';
 import type { Config } from '../../src/config.js';
 import { openDb, type Db } from '../../src/db.js';
 import { Store } from '../../src/store.js';
+import type { DiscordClient } from '../../src/discord/client.js';
 import type { TelegramClient } from '../../src/telegram/client.js';
 import { LiveStream, Platform } from '../../src/types.js';
 import { BaseWatcher } from '../../src/watchers/base.js';
@@ -82,6 +83,16 @@ export function fakeTelegram() {
 
 export type FakeTelegram = ReturnType<typeof fakeTelegram>;
 
+export function fakeDiscord() {
+  return {
+    send: vi.fn(async (_payload: { embeds?: Array<{ description: string; image?: { url: string } }> }) => ({
+      id: '9000000000000001',
+    })),
+  };
+}
+
+export type FakeDiscord = ReturnType<typeof fakeDiscord>;
+
 export function testConfig(overrides: Partial<Config> = {}): Config {
   return {
     telegram: { botToken: 'token', chatId: '-100123' },
@@ -92,6 +103,8 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     announceEnd: true,
     dryRun: false,
     databasePath: ':memory:',
+    language: 'ru',
+    announceLanguage: 'ru',
     ...overrides,
   };
 }
@@ -101,16 +114,18 @@ export interface Harness {
   db: Db;
   store: Store;
   telegram: FakeTelegram;
+  discord: FakeDiscord;
   watchers: Record<Platform, FakeWatcher>;
   announcer: Announcer;
-  /** Новый Announcer на той же базе — имитация рестарта процесса. */
-  restart(): Announcer;
+  /** Новый Announcer на той же базе — имитация рестарта процесса; withDiscord меняет набор площадок. */
+  restart(withDiscord?: boolean): Announcer;
   cleanup(): void;
 }
 
 export function createHarness(
   configOverrides: Partial<Config> = {},
-  onEvent?: (event: AnnouncerEvent) => void
+  onEvent?: (event: AnnouncerEvent) => void,
+  options: { discord?: boolean } = {}
 ): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'stream-bot-'));
   const dbPath = join(dir, 'test.db');
@@ -118,6 +133,7 @@ export function createHarness(
   const store = new Store(db);
   const clock = new Clock();
   const telegram = fakeTelegram();
+  const discord = fakeDiscord();
   const config = testConfig(configOverrides);
 
   const watchers: Record<Platform, FakeWatcher> = {
@@ -127,11 +143,12 @@ export function createHarness(
   };
   const list = [watchers.twitch, watchers.youtube, watchers.vkvideo];
 
-  const build = () =>
+  const build = (withDiscord = options.discord ?? false) =>
     new Announcer({
       store,
       watchers: list,
       telegram: telegram as unknown as TelegramClient,
+      discord: withDiscord ? (discord as unknown as DiscordClient) : undefined,
       config,
       now: clock.now,
       onEvent,
@@ -142,6 +159,7 @@ export function createHarness(
     db,
     store,
     telegram,
+    discord,
     watchers,
     announcer: build(),
     restart: build,
