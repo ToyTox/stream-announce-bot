@@ -1,5 +1,6 @@
 import type { Announcer } from '../announcer.js';
 import type { Store } from '../store.js';
+import { t, type Lang } from '../i18n/index.js';
 import { PLATFORM_LABELS } from '../types.js';
 import { TelegramClient, TelegramError, TelegramUpdate } from './client.js';
 
@@ -15,19 +16,9 @@ export interface CommandListenerDeps {
   store: Store;
   announcer: Announcer;
   adminId: number;
+  /** Язык ответов; функция, потому что его можно сменить в панели, не перезапуская бота. */
+  language: () => Lang;
 }
-
-const HELP = [
-  '<b>Команды</b>',
-  '/text &lt;текст&gt; — врезка в следующий анонс',
-  '/text — показать текущую врезку',
-  '/text - — сбросить врезку',
-  'Фото — превью для всех анонсов вместо превью Twitch',
-  '/image — есть ли своё превью',
-  '/image - или /image_clear — сбросить превью',
-  '/status — что сейчас в эфире',
-  '/help — эта справка',
-].join('\n');
 
 export class CommandListener {
   private running = false;
@@ -35,6 +26,10 @@ export class CommandListener {
   private loopDone: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: CommandListenerDeps) {}
+
+  private t(key: string, params?: Record<string, string | number>): string {
+    return t(this.deps.language(), key, params);
+  }
 
   start(): void {
     if (this.running) return;
@@ -98,12 +93,12 @@ export class CommandListener {
     const photo = message.photo?.at(-1);
     if (photo) {
       this.deps.store.setAnnouncePhoto(photo.file_id);
-      await this.reply('Превью сохранено — будет во всех анонсах вместо превью Twitch, пока не замените или не сбросите командой /image -.');
+      await this.reply(this.t('cmd.photoSaved'));
       return;
     }
     if (message.document?.mime_type?.startsWith('image/')) {
       // sendPhoto не принимает file_id документа — нужна картинка, отправленная как фото.
-      await this.reply('Это картинка-файл. Отправьте её как фото, со сжатием.');
+      await this.reply(this.t('cmd.imageFile'));
       return;
     }
 
@@ -131,7 +126,7 @@ export class CommandListener {
         return;
       case '/help':
       case '/start':
-        await this.reply(HELP);
+        await this.reply(this.t('cmd.help'));
         return;
       default:
         return;
@@ -143,44 +138,44 @@ export class CommandListener {
       const current = this.deps.store.announceText();
       await this.reply(
         current
-          ? `Врезка для следующего анонса:\n${escapeForReply(current)}`
-          : 'Врезка не задана. Отправьте «/text ваш текст», чтобы добавить её в следующий анонс.'
+          ? this.t('cmd.textCurrent', { text: escapeForReply(current) })
+          : this.t('cmd.textNone')
       );
       return;
     }
 
     if (argument === '-') {
       this.deps.store.clearAnnounceText();
-      await this.reply('Врезка сброшена.');
+      await this.reply(this.t('cmd.textCleared'));
       return;
     }
 
     this.deps.store.setAnnounceText(argument);
-    await this.reply(`Врезка сохранена, уйдёт в следующий анонс:\n${escapeForReply(argument)}`);
+    await this.reply(this.t('cmd.textSaved', { text: escapeForReply(argument) }));
   }
 
   private async handleImage(argument: string): Promise<void> {
     if (argument === '-') {
       this.deps.store.clearAnnouncePhoto();
-      await this.reply('Своё превью сброшено — в анонсе будет превью Twitch.');
+      await this.reply(this.t('cmd.imageCleared'));
       return;
     }
     await this.reply(
       this.deps.store.announcePhoto()
-        ? 'Своё превью задано и используется во всех анонсах. «/image -» — сбросить.'
-        : 'Своё превью не задано — в анонсе будет превью Twitch. Пришлите фото, чтобы заменить.'
+        ? this.t('cmd.imageSet')
+        : this.t('cmd.imageNotSet')
     );
   }
 
   private statusText(): string {
     const status = this.deps.announcer.status();
-    if (!status) return 'Сейчас эфира нет.';
+    if (!status) return this.t('cmd.statusNone');
     const platforms =
       status.platforms.length > 0
         ? status.platforms.map((platform) => PLATFORM_LABELS[platform]).join(', ')
-        : 'платформы проверяются';
-    const startedAt = new Date(status.startedAt).toLocaleString('ru-RU');
-    return `В эфире: ${platforms}\nНачало: ${startedAt}`;
+        : this.t('cmd.statusChecking');
+    const startedAt = new Date(status.startedAt).toLocaleString(this.t('locale'));
+    return this.t('cmd.statusLive', { platforms, startedAt });
   }
 
   private async reply(text: string): Promise<void> {

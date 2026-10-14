@@ -103,6 +103,8 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     announceEnd: true,
     dryRun: false,
     databasePath: ':memory:',
+    language: 'ru',
+    announceLanguage: 'ru',
     ...overrides,
   };
 }

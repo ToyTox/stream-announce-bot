@@ -8,11 +8,22 @@ import { fileURLToPath } from 'node:url';
 import { channelUrl } from '../announcer.js';
 import type { Bot } from '../bot.js';
 import { ConfigError, loadConfig, type Env } from '../config.js';
+import {
+  announceLanguageFromEnv,
+  languageFromEnv,
+  languageOptions,
+  messagesFor,
+  normalizeLanguage,
+  resolveLanguage,
+  t,
+  type Lang,
+  type Params,
+} from '../i18n/index.js';
 import { recentLogs } from '../log.js';
 import { TelegramError } from '../telegram/client.js';
 import { PLATFORMS, PLATFORM_LABELS } from '../types.js';
 import { replaceEnvFile, writeEnvFile } from './envFile.js';
-import { SETTING_GUIDES, settingsChanges, settingsView } from './settings.js';
+import { settingGuides, settingsChanges, settingsView } from './settings.js';
 
 /**
  * Локальная панель: настройки, статус, превью сообщений и лог. Слушает только
@@ -22,6 +33,8 @@ import { SETTING_GUIDES, settingsChanges, settingsView } from './settings.js';
 export interface PanelRuntime {
   bot: Bot | null;
   configError: string | null;
+  /** Та же ошибка с ключом словаря: даёт показать её на языке панели. */
+  configErrorSource?: ConfigError | null;
   restart(env: Env): Promise<void>;
 }
 
@@ -63,10 +76,24 @@ const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 class HttpError extends Error {
   constructor(
     readonly status: number,
-    message: string
+    message: string,
+    /** Ключ словаря: текст подставляется на языке запроса при отправке ответа. */
+    readonly key?: string,
+    readonly params?: Params
   ) {
     super(message);
   }
+
+  static localized(status: number, key: string, params?: Params): HttpError {
+    return new HttpError(status, t('ru', key, params), key, params);
+  }
+}
+
+/** Язык запроса: APP_LANGUAGE, иначе язык браузера из Accept-Language. */
+function requestLanguage(req: IncomingMessage, env: Env): Lang {
+  const header = req.headers['accept-language'];
+  const locale = (Array.isArray(header) ? header[0] : header)?.split(',')[0]?.split(';')[0]?.trim();
+  return resolveLanguage(env.APP_LANGUAGE, locale);
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -79,7 +106,7 @@ async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > limit) throw new HttpError(413, `Слишком большой файл: максимум ${Math.round(limit / 1024 / 1024)} МБ`);
+    if (size > limit) throw HttpError.localized(413, 'server.tooLarge', { mb: Math.round(limit / 1024 / 1024) });
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks);
@@ -92,7 +119,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     const parsed: unknown = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
   } catch {
-    throw new HttpError(400, 'Некорректный JSON');
+    throw HttpError.localized(400, 'server.badJson');
   }
 }
 
@@ -104,22 +131,28 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 function checkTrusted(req: IncomingMessage, port: number): void {
   const allowedHosts = [`localhost:${port}`, `127.0.0.1:${port}`];
   const host = req.headers.host ?? '';
-  if (!allowedHosts.includes(host)) throw new HttpError(403, 'Панель доступна только с этого компьютера');
+  if (!allowedHosts.includes(host)) throw HttpError.localized(403, 'server.forbiddenHost');
 
   const origin = req.headers.origin;
   if (origin !== undefined && !allowedHosts.some((allowed) => origin === `http://${allowed}`)) {
-    throw new HttpError(403, 'Запрос с чужого сайта отклонён');
+    throw HttpError.localized(403, 'server.forbiddenOrigin');
   }
 
   const type = req.headers['content-type'] ?? '';
   if (req.method === 'POST' && !type.startsWith('application/json')) {
-    throw new HttpError(415, 'Ожидается application/json');
+    throw HttpError.localized(415, 'server.jsonExpected');
   }
 }
 
-function requireBot(runtime: PanelRuntime): Bot {
+/** Причина, по которой бот не запущен, на языке lang. */
+function configErrorText(runtime: PanelRuntime, lang: Lang): string | null {
+  return runtime.configErrorSource?.localize(lang) ?? runtime.configError;
+}
+
+function requireBot(runtime: PanelRuntime, lang: Lang): Bot {
   if (runtime.bot) return runtime.bot;
-  throw new HttpError(503, runtime.configError ? `Бот не запущен: ${runtime.configError}` : 'Бот не запущен');
+  const reason = configErrorText(runtime, lang);
+  throw reason ? HttpError.localized(503, 'server.botDownReason', { reason }) : HttpError.localized(503, 'server.botDown');
 }
 
 /** Ссылка на сообщение в супергруппе: -1002241331974 → t.me/c/2241331974/<id>. */
@@ -137,9 +170,9 @@ export function createPanel(deps: PanelDeps): Panel {
   /** Последнее скачанное превью: Telegram отдаёт файл по file_id, качать его на каждый показ незачем. */
   let imageCache: { fileId: string; data: Uint8Array } | null = null;
 
-  function status() {
+  function status(lang: Lang) {
     const bot = runtime.bot;
-    if (!bot) return { version, running: false, configError: runtime.configError };
+    if (!bot) return { version, running: false, configError: configErrorText(runtime, lang) };
 
     const broadcast = bot.announcer.status();
     const states = new Map(bot.announcer.platformStates().map((state) => [state.platform, state]));
@@ -164,8 +197,9 @@ export function createPanel(deps: PanelDeps): Panel {
     };
   }
 
-  async function route(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  async function route(req: IncomingMessage, res: ServerResponse, url: URL, lang: Lang): Promise<void> {
     const key = `${req.method} ${url.pathname}`;
+    const needBot = () => requireBot(runtime, lang);
 
     switch (key) {
       case 'GET /':
@@ -177,16 +211,16 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'GET /api/status':
-        return sendJson(res, 200, status());
+        return sendJson(res, 200, status(lang));
 
       case 'POST /api/probe':
-        await requireBot(runtime).tickNow();
-        return sendJson(res, 200, status());
+        await needBot().tickNow();
+        return sendJson(res, 200, status(lang));
 
       case 'POST /api/test-message': {
-        const bot = requireBot(runtime);
+        const bot = needBot();
         try {
-          await bot.telegram.sendMessage('✅ Проверка связи из панели: бот анонсов на месте');
+          await bot.telegram.sendMessage(t(lang, 'server.testMessage'));
         } catch (error) {
           throw new HttpError(502, errorText(error));
         }
@@ -194,10 +228,10 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'GET /api/text':
-        return sendJson(res, 200, { text: requireBot(runtime).store.announceText() });
+        return sendJson(res, 200, { text: needBot().store.announceText() });
 
       case 'PUT /api/text': {
-        const store = requireBot(runtime).store;
+        const store = needBot().store;
         const body = await readJson(req);
         const text = typeof body.text === 'string' ? body.text.trim() : '';
         if (text) store.setAnnounceText(text);
@@ -206,31 +240,31 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'DELETE /api/text':
-        requireBot(runtime).store.clearAnnounceText();
+        needBot().store.clearAnnounceText();
         return sendJson(res, 200, { text: null });
 
       case 'PUT /api/image': {
-        const bot = requireBot(runtime);
+        const bot = needBot();
         const adminId = bot.config.telegram.adminId;
         if (adminId === undefined) {
-          throw new HttpError(400, 'Укажите в настройках «Ваш user ID»: картинка загружается в Telegram через вашу личку с ботом');
+          throw HttpError.localized(400, 'server.adminRequired');
         }
         const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim();
-        if (!IMAGE_TYPES.has(type)) throw new HttpError(415, 'Подходят только JPEG, PNG и WebP');
+        if (!IMAGE_TYPES.has(type)) throw HttpError.localized(415, 'server.imageTypes');
 
         const data = await readBody(req, IMAGE_LIMIT);
         let fileId: string | undefined;
         try {
-          const message = await bot.telegram.uploadPhoto(adminId, data, type, 'Превью для анонсов — загружено из панели');
+          const message = await bot.telegram.uploadPhoto(adminId, data, type, t(lang, 'server.imageCaption'));
           fileId = message.photo?.at(-1)?.file_id;
         } catch (error) {
           const hint =
             error instanceof TelegramError && error.code === 'chat_not_found'
-              ? ' — напишите боту в личку /start, чтобы он мог вам писать'
+              ? t(lang, 'server.imageChatHint')
               : '';
           throw new HttpError(502, `${errorText(error)}${hint}`);
         }
-        if (!fileId) throw new HttpError(502, 'Telegram не вернул file_id картинки');
+        if (!fileId) throw HttpError.localized(502, 'server.noFileId');
 
         bot.store.setAnnouncePhoto(fileId);
         imageCache = { fileId, data };
@@ -238,9 +272,9 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'GET /api/image/file': {
-        const bot = requireBot(runtime);
+        const bot = needBot();
         const fileId = bot.store.announcePhoto();
-        if (!fileId) throw new HttpError(404, 'Своё превью не задано');
+        if (!fileId) throw HttpError.localized(404, 'server.noImage');
         if (imageCache?.fileId !== fileId) {
           try {
             imageCache = { fileId, data: await bot.telegram.downloadFile(fileId) };
@@ -255,12 +289,12 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'DELETE /api/image':
-        requireBot(runtime).store.clearAnnouncePhoto();
+        needBot().store.clearAnnouncePhoto();
         imageCache = null;
         return sendJson(res, 200, { ok: true });
 
       case 'GET /api/preview': {
-        const bot = requireBot(runtime);
+        const bot = needBot();
         return sendJson(res, 200, {
           ...bot.announcer.preview(),
           photo: bot.store.announcePhoto() ? 'custom' : 'twitch',
@@ -268,7 +302,11 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'GET /api/settings':
-        return sendJson(res, 200, { fields: settingsView(env), guides: SETTING_GUIDES, configError: runtime.configError });
+        return sendJson(res, 200, {
+          fields: settingsView(env, lang),
+          guides: settingGuides(lang),
+          configError: configErrorText(runtime, lang),
+        });
 
       case 'PUT /api/settings': {
         const body = await readJson(req);
@@ -280,7 +318,7 @@ export function createPanel(deps: PanelDeps): Panel {
         try {
           loadConfig({ ...env, ...changes });
         } catch (error) {
-          if (error instanceof ConfigError) throw new HttpError(400, error.message);
+          if (error instanceof ConfigError) throw new HttpError(400, error.localize(lang));
           throw error;
         }
 
@@ -288,13 +326,13 @@ export function createPanel(deps: PanelDeps): Panel {
         Object.assign(env, changes);
         console.log(`⚙️  Настройки изменены в панели: ${changed.join(', ')}`);
         await runtime.restart(env);
-        return sendJson(res, 200, { ok: true, changed, configError: runtime.configError });
+        return sendJson(res, 200, { ok: true, changed, configError: configErrorText(runtime, lang) });
       }
 
       case 'POST /api/import-env': {
         const body = await readJson(req);
         if (typeof body.content !== 'string' || body.content.trim() === '') {
-          throw new HttpError(400, 'Файл пустой');
+          throw HttpError.localized(400, 'server.fileEmpty');
         }
         const imported = { ...defaults, ...parseEnv(body.content) };
 
@@ -302,7 +340,7 @@ export function createPanel(deps: PanelDeps): Panel {
         try {
           loadConfig(imported);
         } catch (error) {
-          if (error instanceof ConfigError) throw new HttpError(400, error.message);
+          if (error instanceof ConfigError) throw new HttpError(400, error.localize(lang));
           throw error;
         }
 
@@ -314,7 +352,30 @@ export function createPanel(deps: PanelDeps): Panel {
         Object.assign(env, imported);
         console.log('📥 Настройки импортированы из .env');
         await runtime.restart(env);
-        return sendJson(res, 200, { ok: true, configError: runtime.configError });
+        return sendJson(res, 200, { ok: true, configError: configErrorText(runtime, lang) });
+      }
+
+      case 'GET /api/i18n':
+        return sendJson(res, 200, {
+          language: lang,
+          // Явный выбор (пусто — авто): по нему переключатель в шапке показывает «авто».
+          setting: normalizeLanguage(env.APP_LANGUAGE) ?? '',
+          languages: languageOptions(),
+          messages: messagesFor(lang),
+        });
+
+      // Язык меняется без перезапуска бота: он читает язык из своего конфига при каждом сообщении.
+      case 'PUT /api/language': {
+        const body = await readJson(req);
+        const value = typeof body.language === 'string' ? body.language.trim().toLowerCase() : '';
+        if (value !== '' && !normalizeLanguage(value)) throw HttpError.localized(400, 'server.badLanguage');
+        writeEnvFile(envPath, { APP_LANGUAGE: value });
+        env.APP_LANGUAGE = value;
+        if (runtime.bot) {
+          runtime.bot.config.language = languageFromEnv(env);
+          runtime.bot.config.announceLanguage = announceLanguageFromEnv(env);
+        }
+        return sendJson(res, 200, { ok: true });
       }
 
       case 'GET /api/logs': {
@@ -323,20 +384,22 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       default:
-        throw new HttpError(404, 'Не найдено');
+        throw HttpError.localized(404, 'server.notFound');
     }
   }
 
   const server = createServer((req, res) => {
     void (async () => {
+      const lang = requestLanguage(req, env);
       try {
         const port = (server.address() as AddressInfo).port;
         checkTrusted(req, port);
-        await route(req, res, new URL(req.url ?? '/', `http://localhost:${port}`));
+        await route(req, res, new URL(req.url ?? '/', `http://localhost:${port}`), lang);
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;
         if (status === 500) console.error('❌ Ошибка панели:', errorText(error));
-        if (!res.headersSent) sendJson(res, status, { error: errorText(error) });
+        const message = error instanceof HttpError && error.key ? t(lang, error.key, error.params) : errorText(error);
+        if (!res.headersSent) sendJson(res, status, { error: message });
         else res.end();
       }
     })();

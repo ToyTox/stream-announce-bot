@@ -1,15 +1,20 @@
+import { DEFAULT_LANGUAGE, t, type Lang } from './i18n/index.js';
+
 /** Подпись к фото в Telegram ограничена 1024 символами — за этим следит trimToLimit(). */
 export const CAPTION_LIMIT = 1024;
 
-export const GREETING = 'Всем привет';
+/** Постоянные фразы на русском — язык по умолчанию. */
+export const GREETING = t(DEFAULT_LANGUAGE, 'announce.greeting');
 
-export const THANKS = 'Всем спасибо, кто забегал на стрим, повтор стрима можно посмотреть тут:';
+export const THANKS = t(DEFAULT_LANGUAGE, 'announce.thanks');
 
 export interface AnnounceInput {
   title: string;
   game?: string | null;
   customText?: string | null;
   links: ChannelLink[];
+  /** Язык постоянных фраз; врезка и название не переводятся. По умолчанию русский. */
+  language?: Lang;
 }
 
 /** Ссылка в сообщении: подпись своя, потому что VK Video и VK Live — разные ссылки одной площадки. */
@@ -23,6 +28,7 @@ export interface FinishedInput {
   game?: string | null;
   durationMs: number;
   links: ChannelLink[];
+  language?: Lang;
 }
 
 /** Экранирование для parse_mode=HTML: в названиях стримов амперсанд встречается регулярно. */
@@ -30,13 +36,19 @@ export function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-export function formatDuration(ms: number): string {
+export function formatDuration(ms: number, language: Lang = DEFAULT_LANGUAGE): string {
   const totalMinutes = Math.max(0, Math.round(ms / 60_000));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  if (hours === 0) return `${minutes} мин`;
-  if (minutes === 0) return `${hours} ч`;
-  return `${hours} ч ${minutes} мин`;
+  if (hours === 0) return t(language, 'duration.min', { m: minutes });
+  if (minutes === 0) return t(language, 'duration.hours', { h: hours });
+  return t(language, 'duration.hoursMin', { h: hours, m: minutes });
+}
+
+function finishedLine(input: FinishedInput): string {
+  return t(input.language ?? DEFAULT_LANGUAGE, 'announce.finished', {
+    duration: formatDuration(input.durationMs, input.language),
+  });
 }
 
 /**
@@ -63,7 +75,7 @@ function titleBlock(icon: string, title: string, game?: string | null): string {
 }
 
 export function renderAnnounce(input: AnnounceInput): string {
-  const head = `${GREETING}\n\n${titleBlock('🔴', input.title, input.game)}`;
+  const head = `${t(input.language ?? DEFAULT_LANGUAGE, 'announce.greeting')}\n\n${titleBlock('🔴', input.title, input.game)}`;
   const tailText = linksBlock(input.links);
 
   const custom = input.customText?.trim();
@@ -85,8 +97,8 @@ export function renderAnnounce(input: AnnounceInput): string {
 export function renderFinished(input: FinishedInput): string {
   return [
     titleBlock('⚫️', input.title, input.game),
-    `Эфир завершён, длился ${formatDuration(input.durationMs)}`,
-    THANKS,
+    finishedLine(input),
+    t(input.language ?? DEFAULT_LANGUAGE, 'announce.thanks'),
     linksBlock(input.links),
   ].join('\n\n');
 }
@@ -149,7 +161,7 @@ function discordTitleBlock(icon: string, title: string, game?: string | null): s
 
 /** Текст анонса для Discord — описание embed; состав тот же, что в Telegram. */
 export function renderDiscordAnnounce(input: AnnounceInput): string {
-  const head = `${GREETING}\n\n${discordTitleBlock('🔴', input.title, input.game)}`;
+  const head = `${t(input.language ?? DEFAULT_LANGUAGE, 'announce.greeting')}\n\n${discordTitleBlock('🔴', input.title, input.game)}`;
   const tailText = discordLinksBlock(input.links);
   const base = tailText ? `${head}\n\n${tailText}` : head;
 
@@ -168,8 +180,8 @@ export function renderDiscordAnnounce(input: AnnounceInput): string {
 export function renderDiscordFinished(input: FinishedInput): string {
   return [
     discordTitleBlock('⚫️', input.title, input.game),
-    `Эфир завершён, длился ${formatDuration(input.durationMs)}`,
-    THANKS,
+    finishedLine(input),
+    t(input.language ?? DEFAULT_LANGUAGE, 'announce.thanks'),
     discordLinksBlock(input.links),
   ].join('\n\n');
 }

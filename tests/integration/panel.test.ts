@@ -54,7 +54,7 @@ function call(
 }
 
 function startPanel(configOverrides: Parameters<typeof testConfig>[0] = {}): Promise<void> {
-  harness = createHarness();
+  harness = createHarness(configOverrides);
   const config = testConfig({
     telegram: { botToken: 'token', chatId: '-100123', adminId: ADMIN },
     twitch: { login: 'me', clientId: 'id', clientSecret: 'secret' },
@@ -307,5 +307,71 @@ describe('панель: защита', () => {
 
     expect(reply.status).toBe(415);
     expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('панель: язык', () => {
+  it('без настройки язык берётся из Accept-Language браузера', async () => {
+    const ru = await call('GET', '/api/i18n');
+    const en = await call('GET', '/api/i18n', { headers: { 'accept-language': 'en-US,en;q=0.9' } });
+    const de = await call('GET', '/api/i18n', { headers: { 'accept-language': 'de-DE' } });
+
+    expect(ru.json).toMatchObject({ language: 'ru', setting: '' });
+    expect(en.json).toMatchObject({ language: 'en', setting: '' });
+    expect(en.json.messages['ui.tab.status']).toBe('Status');
+    expect(de.json.language).toBe('en');
+    expect(en.json.languages).toEqual([
+      { code: 'ru', name: 'Русский' },
+      { code: 'en', name: 'English' },
+    ]);
+  });
+
+  it('смена языка пишется в .env, не перезапускает бота и меняет язык бота на лету', async () => {
+    const reply = await call('PUT', '/api/language', { body: { language: 'en' } });
+
+    expect(reply.status).toBe(200);
+    expect(readFileSync(envPath, 'utf8')).toContain('APP_LANGUAGE=en');
+    expect(env.APP_LANGUAGE).toBe('en');
+    expect(runtime.restart).not.toHaveBeenCalled();
+    expect(runtime.bot?.config).toMatchObject({ language: 'en', announceLanguage: 'en' });
+    expect((await call('GET', '/api/i18n')).json).toMatchObject({ language: 'en', setting: 'en' });
+  });
+
+  it('неизвестный язык отклоняется', async () => {
+    const reply = await call('PUT', '/api/language', { body: { language: 'xx' } });
+
+    expect(reply.status).toBe(400);
+    expect(readFileSync(envPath, 'utf8')).not.toContain('APP_LANGUAGE');
+  });
+
+  it('ошибки API и форма настроек приходят на языке запроса', async () => {
+    const headers = { 'accept-language': 'en-US' };
+
+    const missing = await call('GET', '/api/nothing', { headers });
+    const noImage = await call('GET', '/api/image/file', { headers });
+    const settings = await call('GET', '/api/settings', { headers });
+    const invalid = await call('PUT', '/api/settings', { headers, body: { values: { TELEGRAM_CHAT_ID: '' } } });
+
+    expect(missing.json.error).toBe('Not found');
+    expect(noImage.json.error).toBe('No custom preview set');
+    expect(settings.json.fields.find((f: any) => f.key === 'TELEGRAM_BOT_TOKEN').label).toBe('Bot token');
+    expect(invalid.json.error).toContain('Variable TELEGRAM_CHAT_ID is not set');
+  });
+
+  it('тестовое сообщение уходит на языке панели', async () => {
+    await call('POST', '/api/test-message', { body: {}, headers: { 'accept-language': 'en' } });
+
+    expect(harness.telegram.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Connection check'));
+  });
+
+  it('превью анонса — на языке анонса, не интерфейса', async () => {
+    await panel.close();
+    harness.cleanup();
+    await startPanel({ language: 'ru', announceLanguage: 'en' });
+
+    const preview = await call('GET', '/api/preview');
+
+    expect(preview.json.announce.startsWith('Hello everyone')).toBe(true);
+    expect(preview.json.finished).toContain('Stream ended, it lasted 2 h 47 min');
   });
 });

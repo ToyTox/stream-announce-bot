@@ -9,6 +9,7 @@ import {
 } from './announceTemplate.js';
 import type { Config } from './config.js';
 import { DiscordClient, DiscordError } from './discord/client.js';
+import { t } from './i18n/index.js';
 import { Store, type DeliveryRow } from './store.js';
 import { TelegramClient, TelegramError } from './telegram/client.js';
 import { LiveStream, PLATFORMS, PLATFORM_LABELS, Platform } from './types.js';
@@ -365,7 +366,13 @@ export class Announcer {
     const broadcast = this.store.openBroadcast();
     const customText = broadcast && broadcast.announcedAt !== null ? broadcast.announceText : this.store.announceText();
     const request: AnnounceRequest = {
-      input: { title: source?.title ?? 'Трансляция', game: source?.game, customText, links },
+      input: {
+        title: source?.title ?? t(this.config.announceLanguage, 'announce.fallbackTitle'),
+        game: source?.game,
+        customText,
+        links,
+        language: this.config.announceLanguage,
+      },
       customPhoto: this.store.announcePhoto(),
       thumbnailUrl: source?.thumbnailUrl,
     };
@@ -428,10 +435,11 @@ export class Announcer {
     // Без хвоста offlineGraceMs: эфир кончился, когда площадки замолчали, а не когда мы это признали.
     const durationMs = broadcast.lastLiveAt - broadcast.startedAt;
     const input: FinishedInput = {
-      title: source?.title ?? 'Трансляция',
+      title: source?.title ?? t(this.config.announceLanguage, 'announce.fallbackTitle'),
       game: source?.game,
       durationMs,
       links: this.channelLinks(),
+      language: this.config.announceLanguage,
     };
 
     // Итог идёт только туда, куда дошёл анонс; каждая площадка независимо и без повторов.
@@ -506,17 +514,19 @@ export class Announcer {
   preview(): { announce: string; finished: string } {
     const broadcast = this.store.openBroadcast();
     const source = broadcast ? this.source(broadcast.id) : undefined;
-    const title = source?.title ?? 'Название стрима на Twitch';
-    const game = source ? source.game : 'Игра на Twitch';
+    const language = this.config.announceLanguage;
+    const title = source?.title ?? t(language, 'announce.sampleTitle');
+    const game = source ? source.game : t(language, 'announce.sampleGame');
     const links = this.channelLinks();
 
     return {
-      announce: renderAnnounce({ title, game, customText: this.store.announceText(), links }),
+      announce: renderAnnounce({ title, game, customText: this.store.announceText(), links, language }),
       finished: renderFinished({
         title,
         game,
         durationMs: broadcast ? this.now() - broadcast.startedAt : (2 * 60 + 47) * 60_000,
         links,
+        language,
       }),
     };
   }

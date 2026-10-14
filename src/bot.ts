@@ -58,7 +58,14 @@ export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => vo
 
   let listener: CommandListener | undefined;
   if (config.telegram.adminId !== undefined) {
-    listener = new CommandListener({ telegram, store, announcer, adminId: config.telegram.adminId });
+    listener = new CommandListener({
+      telegram,
+      store,
+      announcer,
+      adminId: config.telegram.adminId,
+      // Язык меняется из панели без перезапуска бота, поэтому читается при каждом ответе.
+      language: () => config.language,
+    });
     listener.start();
     console.log('💬 Команды бота принимаются');
   } else {
@@ -107,6 +114,8 @@ export type BotFactory = (config: Config, onEvent?: (event: AnnouncerEvent) => v
 export class Runtime {
   bot: Bot | null = null;
   configError: string | null = null;
+  /** Та же ошибка с ключом словаря — чтобы панель показала её на своём языке. */
+  configErrorSource: ConfigError | null = null;
 
   constructor(
     private readonly factory: BotFactory = startBot,
@@ -117,9 +126,11 @@ export class Runtime {
     try {
       this.bot = this.factory(loadConfig(env), this.onEvent);
       this.configError = null;
+      this.configErrorSource = null;
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
       this.configError = error.message;
+      this.configErrorSource = error;
       console.error(`❌ ${error.message}`);
     }
   }

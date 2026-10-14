@@ -200,3 +200,63 @@ describe('Discord', () => {
     expect(text).toMatch(/^(😀\\\*)+…$/u);
   });
 });
+
+describe('английский язык анонса', () => {
+  const en = { language: 'en' };
+
+  it('Telegram: приветствие на английском, название и врезка как есть', () => {
+    const text = renderAnnounce({ title: 'Вечерний стрим', customText: 'Сегодня финал', links: [links[0]!], ...en });
+
+    expect(text.split('\n').slice(0, 3)).toEqual(['Hello everyone', '', '🔴 <b>Вечерний стрим</b>']);
+    expect(text).toContain('Сегодня финал');
+  });
+
+  it('Telegram: итог эфира', () => {
+    const text = renderFinished({ title: 'Stream', durationMs: 135 * 60_000, links: [links[0]!], ...en });
+
+    expect(text).toContain('Stream ended, it lasted 2 h 15 min');
+    expect(text).toContain('Thanks to everyone who dropped by the stream, you can watch the replay here:');
+    expect(text).not.toContain('Эфир завершён');
+  });
+
+  it('Telegram: врезка обрезается по лимиту подписи', () => {
+    const text = renderAnnounce({ title: 'Stream', customText: 'a'.repeat(3000), links, ...en });
+
+    expect(text.length).toBeLessThanOrEqual(CAPTION_LIMIT);
+    expect(text.startsWith('Hello everyone')).toBe(true);
+    expect(text).toContain('…');
+    expect(text).toContain('VK Live');
+  });
+
+  it('Discord: анонс и итог эфира', () => {
+    const announce = renderDiscordAnnounce({ title: 'Stream', game: 'Elden Ring', links: [links[0]!], ...en });
+    const finished = renderDiscordFinished({ title: 'Stream', durationMs: 45 * 60_000, links: [links[0]!], ...en });
+
+    expect(announce.startsWith('Hello everyone\n\n🔴 **Stream**\n🎮 Elden Ring')).toBe(true);
+    expect(finished).toContain('Stream ended, it lasted 45 min');
+    expect(finished).toContain('Thanks to everyone who dropped by the stream');
+    expect(finished).toContain('[Twitch](https://twitch.tv/me)');
+  });
+
+  it('Discord: врезка обрезается по лимиту описания', () => {
+    const text = renderDiscordAnnounce({ title: 'Stream', customText: '*'.repeat(9000), links, ...en });
+
+    expect(text.length).toBeLessThanOrEqual(DISCORD_DESCRIPTION_LIMIT);
+    expect(text.startsWith('Hello everyone')).toBe(true);
+    expect(text.endsWith('[VK Live](https://live.vkvideo.ru/me)')).toBe(true);
+  });
+
+  it('без языка остаётся русский', () => {
+    expect(renderAnnounce({ title: 'Стрим', links }).startsWith('Всем привет')).toBe(true);
+  });
+});
+
+describe('formatDuration: английский', () => {
+  it.each([
+    [45 * 60_000, '45 min'],
+    [60 * 60_000, '1 h'],
+    [95 * 60_000, '1 h 35 min'],
+  ])('%i мс → %s', (ms, expected) => {
+    expect(formatDuration(ms, 'en')).toBe(expected);
+  });
+});

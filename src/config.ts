@@ -1,3 +1,4 @@
+import { announceLanguageFromEnv, languageFromEnv, t, type Lang, type Params } from './i18n/index.js';
 import { isPlatform, Platform } from './types.js';
 
 /**
@@ -44,12 +45,27 @@ export interface Config {
   vkVideoReplayUrl?: string;
   dryRun: boolean;
   databasePath: string;
+  /** Язык интерфейса: ответы бота админу, панель, меню трея. */
+  language: Lang;
+  /** Язык постоянных фраз анонса и итога эфира (Telegram и Discord). */
+  announceLanguage: Lang;
 }
 
+/**
+ * Текст ошибки хранится ключом словаря: в лог и тесты идёт русский вариант (message),
+ * а панель показывает ошибку на своём языке через localize().
+ */
 export class ConfigError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(
+    readonly key: string,
+    readonly params: Params = {}
+  ) {
+    super(t('ru', key, params));
     this.name = 'ConfigError';
+  }
+
+  localize(lang: Lang): string {
+    return t(lang, this.key, this.params);
   }
 }
 
@@ -63,7 +79,7 @@ function str(env: Env, name: string): string | undefined {
 function required(env: Env, name: string): string {
   const value = str(env, name);
   if (!value) {
-    throw new ConfigError(`Не задана переменная ${name} — заполните .env (образец в .env.example)`);
+    throw new ConfigError('config.required', { name });
   }
   return value;
 }
@@ -73,7 +89,7 @@ function int(env: Env, name: string, fallback: number): number {
   if (raw === undefined) return fallback;
   const value = Number.parseInt(raw, 10);
   if (!Number.isFinite(value)) {
-    throw new ConfigError(`${name} должна быть числом, получено "${raw}"`);
+    throw new ConfigError('config.number', { name, value: raw });
   }
   return value;
 }
@@ -83,7 +99,7 @@ function optionalInt(env: Env, name: string): number | undefined {
   if (raw === undefined) return undefined;
   const value = Number.parseInt(raw, 10);
   if (!Number.isFinite(value)) {
-    throw new ConfigError(`${name} должна быть числом, получено "${raw}"`);
+    throw new ConfigError('config.number', { name, value: raw });
   }
   return value;
 }
@@ -105,9 +121,7 @@ function twitchConfig(env: Env): TwitchConfig | undefined {
   const clientSecret = str(env, 'TWITCH_CLIENT_SECRET');
   if (!login && !clientId && !clientSecret) return undefined;
   if (!login || !clientId || !clientSecret) {
-    throw new ConfigError(
-      'Для Twitch нужны TWITCH_LOGIN, TWITCH_CLIENT_ID и TWITCH_CLIENT_SECRET — заполнены не все'
-    );
+    throw new ConfigError('config.twitch');
   }
   return { login, clientId, clientSecret };
 }
@@ -141,9 +155,7 @@ function discordConfig(env: Env): DiscordConfig | undefined {
   if (!raw) return undefined;
 
   const fail = (): never => {
-    throw new ConfigError(
-      'DISCORD_WEBHOOK_URL: ожидается адрес вебхука вида https://discord.com/api/webhooks/<id>/<токен> без параметров'
-    );
+    throw new ConfigError('config.discord');
   };
 
   let url: URL;
@@ -162,9 +174,7 @@ function discordConfig(env: Env): DiscordConfig | undefined {
 export function loadConfig(env: Env = process.env): Config {
   const primaryRaw = str(env, 'PRIMARY_PLATFORM') ?? 'twitch';
   if (!isPlatform(primaryRaw)) {
-    throw new ConfigError(
-      `PRIMARY_PLATFORM: ожидается twitch, youtube или vkvideo, получено "${primaryRaw}"`
-    );
+    throw new ConfigError('config.primary', { value: primaryRaw });
   }
 
   const config: Config = {
@@ -186,12 +196,12 @@ export function loadConfig(env: Env = process.env): Config {
     vkVideoReplayUrl: str(env, 'VKVIDEO_REPLAY_URL'),
     dryRun: bool(env, 'DRY_RUN', false),
     databasePath: str(env, 'DATABASE_PATH') ?? './data/bot.db',
+    language: languageFromEnv(env),
+    announceLanguage: announceLanguageFromEnv(env),
   };
 
   if (!config.twitch && !config.youtube && !config.vkvideo) {
-    throw new ConfigError(
-      'Не настроена ни одна платформа: задайте TWITCH_*, YOUTUBE_CHANNEL_ID или VKVIDEO_CHANNEL'
-    );
+    throw new ConfigError('config.noPlatform');
   }
 
   return config;
@@ -209,7 +219,7 @@ export interface WebConfig {
 export function loadWebConfig(env: Env = process.env): WebConfig {
   const port = int(env, 'WEB_PORT', 3210);
   if (port < 1 || port > 65535) {
-    throw new ConfigError(`WEB_PORT должен быть от 1 до 65535, получено ${port}`);
+    throw new ConfigError('config.port', { value: port });
   }
   return { enabled: bool(env, 'WEB_ENABLED', true), port };
 }
