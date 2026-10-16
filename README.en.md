@@ -42,7 +42,7 @@ Enter the values on the "Settings" tab of the panel; at least one platform is re
 
 | Tab | What is there |
 |-----|---------------|
-| Status | Whether you are live, whether the announcement was sent (with a link to the message), the state of each platform and check errors. The "Check now" and "Test message to the group" buttons |
+| Status | Whether you are live, whether the announcement was sent (with a link to the message), the state of each platform and check errors. The "Check now", "Test message to the group", "Test announcement to Telegram" and "Test announcement to Discord" buttons (a real announcement marked "🧪 Test" sent only to the chosen platform; silent in Telegram) |
 | Message | The text for the announcement (like `/text`), your own preview — uploading an image from the computer, a preview of the announcement and of the stream-ended message |
 | Settings | All parameters as a form. Secrets are shown masked, an empty field means "do not change". Saving validates the values and restarts the bot without a repeated announcement. The "Import .env…" button replaces the settings with a whole file |
 | Log | The last 300 lines of what the bot writes |

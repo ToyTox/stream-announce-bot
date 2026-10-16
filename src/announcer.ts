@@ -13,7 +13,7 @@ import type { Config } from './config.js';
 import { DiscordClient, DiscordError, type DiscordFile } from './discord/client.js';
 import { t } from './i18n/index.js';
 import { Store, type DeliveryRow } from './store.js';
-import { TelegramClient, TelegramError } from './telegram/client.js';
+import { TelegramClient, TelegramError, type SendOptions } from './telegram/client.js';
 import { LiveStream, PLATFORMS, PLATFORM_LABELS, Platform } from './types.js';
 import type { BaseWatcher } from './watchers/base.js';
 import { CHANNEL_BASE as VK_LIVE_BASE } from './watchers/vkvideo.js';
@@ -72,6 +72,8 @@ interface AnnounceRequest {
   thumbnailUrl?: string | null;
   /** Платформа, с которой взято превью: Discord берёт только превью Twitch. */
   thumbnailPlatform?: Platform;
+  /** Telegram: отправить без звука уведомления (тестовый анонс). */
+  silent?: boolean;
 }
 
 /** Типы, которые Discord показывает в embed. */
@@ -128,16 +130,17 @@ class TelegramChannel implements DeliveryChannel {
     return error instanceof TelegramError && !error.retriable;
   }
 
-  prepareAnnounce({ input, customPhoto, thumbnailUrl }: AnnounceRequest): Prepared<Sent> {
+  prepareAnnounce({ input, customPhoto, thumbnailUrl, silent }: AnnounceRequest): Prepared<Sent> {
     const text = renderAnnounce(input);
     // Своя картинка из лички важнее превью Twitch; живёт, пока её не сбросят через /image -.
     const photo = customPhoto ?? thumbnailUrl;
+    const options = silent ? { silent } : undefined;
     return {
       text,
       send: async () => {
         const message = photo
-          ? await this.sendWithPhotoFallback(photo, text)
-          : await this.client.sendMessage(text);
+          ? await this.sendWithPhotoFallback(photo, text, options)
+          : await this.client.sendMessage(text, options);
         return { messageId: String(message.message_id), target: this.chatId };
       },
     };
@@ -154,13 +157,13 @@ class TelegramChannel implements DeliveryChannel {
   }
 
   /** Превью может не подгрузиться на стороне Telegram — тогда шлём текстом. */
-  private async sendWithPhotoFallback(photo: string, caption: string) {
+  private async sendWithPhotoFallback(photo: string, caption: string, options?: SendOptions) {
     try {
-      return await this.client.sendPhoto(photo, caption);
+      return await this.client.sendPhoto(photo, caption, options);
     } catch (error) {
       if (error instanceof TelegramError && error.code === 'upstream') {
         console.warn('⚠️  Превью не ушло, отправляю текстом:', error.message);
-        return this.client.sendMessage(caption);
+        return this.client.sendMessage(caption, options);
       }
       throw error;
     }
@@ -572,17 +575,49 @@ export class Announcer {
     });
   }
 
-  /**
-   * Оба сообщения так, как они уйдут сейчас: с текущей врезкой и, если эфир идёт,
-   * с настоящими названием и игрой. Ссылки — на каналы, ведь эфира может и не быть.
-   */
-  preview(): { announce: string; finished: string } {
+  /** Данные превью и тестового анонса: общие, чтобы они не расходились. */
+  private previewContext() {
     const broadcast = this.store.openBroadcast();
     const source = broadcast ? this.source(broadcast.id) : undefined;
     const language = this.config.announceLanguage;
     const title = source?.title ?? t(language, 'announce.sampleTitle');
     const game = source ? source.game : t(language, 'announce.sampleGame');
-    const links = this.channelLinks();
+    return { broadcast, source, title, game, links: this.channelLinks(), language };
+  }
+
+  /**
+   * Настоящий анонс, как в превью, но только в одну площадку и с пометкой «Тест»
+   * (в Telegram — без звука). В базу не пишет, состояние эфира не трогает,
+   * DRY_RUN не учитывает; ошибка уходит вызывающему.
+   */
+  async testAnnounce(channelId: 'telegram' | 'discord'): Promise<void> {
+    const channel = this.channels.find((item) => item.id === channelId);
+    if (!channel) throw new Error(`${channelId}: площадка не настроена`);
+    const { source, title, game, links, language } = this.previewContext();
+    await channel
+      .prepareAnnounce({
+        input: {
+          title,
+          game,
+          customText: this.store.announceText(),
+          links,
+          language,
+          marker: t(language, 'announce.testMarker'),
+        },
+        customPhoto: this.store.announcePhoto(),
+        thumbnailUrl: source?.thumbnailUrl,
+        thumbnailPlatform: source?.platform,
+        silent: true,
+      })
+      .send();
+  }
+
+  /**
+   * Оба сообщения так, как они уйдут сейчас: с текущей врезкой и, если эфир идёт,
+   * с настоящими названием и игрой. Ссылки — на каналы, ведь эфира может и не быть.
+   */
+  preview(): { announce: string; finished: string } {
+    const { broadcast, title, game, links, language } = this.previewContext();
 
     return {
       announce: renderAnnounce({ title, game, customText: this.store.announceText(), links, language }),

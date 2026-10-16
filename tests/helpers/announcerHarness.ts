@@ -8,7 +8,7 @@ import type { Config } from '../../src/config.js';
 import { openDb, type Db } from '../../src/db.js';
 import { Store } from '../../src/store.js';
 import type { DiscordClient } from '../../src/discord/client.js';
-import type { TelegramClient } from '../../src/telegram/client.js';
+import type { SendOptions, TelegramClient } from '../../src/telegram/client.js';
 import { LiveStream, Platform } from '../../src/types.js';
 import { BaseWatcher } from '../../src/watchers/base.js';
 
@@ -61,8 +61,8 @@ export function liveStream(platform: Platform, clock: Clock, overrides: Partial<
 export function fakeTelegram() {
   // Сигнатуры с аргументами нужны, чтобы mock.calls были типизированы в тестах.
   return {
-    sendMessage: vi.fn(async (_text: string) => ({ message_id: 100, chat: { id: '-100123' } })),
-    sendPhoto: vi.fn(async (_photoUrl: string, _caption: string) => ({
+    sendMessage: vi.fn(async (_text: string, _options?: SendOptions) => ({ message_id: 100, chat: { id: '-100123' } })),
+    sendPhoto: vi.fn(async (_photoUrl: string, _caption: string, _options?: SendOptions) => ({
       message_id: 100,
       chat: { id: '-100123' },
     })),

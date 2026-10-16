@@ -185,6 +185,8 @@
       <div class="row" style="margin-top: 14px">
         <button class="btn" id="probe" data-i18n="ui.probe"></button>
         <button class="btn" id="test-message" data-i18n="ui.testMessage"></button>
+        <button class="btn" id="test-announce-telegram" data-i18n="ui.testAnnounceTelegram"></button>
+        <button class="btn" id="test-announce-discord" data-i18n="ui.testAnnounceDiscord"></button>
         <span id="status-result" class="result"></span>
       </div>
     </div>
@@ -391,6 +393,7 @@
 
   function renderStatus(status) {
     lastStatus = status;
+    $('test-announce-discord').hidden = !status.discordSet;
     if (status.version) $('version').textContent = `v${status.version}`;
     const pill = $('bot-pill');
     const banner = $('config-banner');
@@ -488,6 +491,18 @@
       showResult($('status-result'), false, error.message);
     }
   }));
+
+  for (const channel of ['telegram', 'discord']) {
+    const label = channel === 'telegram' ? 'Telegram' : 'Discord';
+    $(`test-announce-${channel}`).addEventListener('click', (e) => withButton(e.currentTarget, async () => {
+      try {
+        await api('POST', `/api/test-announce/${channel}`, {});
+        showResult($('status-result'), true, t(`ui.testAnnounceSent${label}`));
+      } catch (error) {
+        showResult($('status-result'), false, error.message);
+      }
+    }));
+  }
 
   // ---------- Сообщение ----------
   async function loadPreview() {
