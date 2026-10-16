@@ -17,6 +17,7 @@ export const en: Record<keyof typeof ru, string> = {
   'announce.fallbackTitle': 'Live stream',
   'announce.sampleTitle': 'Stream title on Twitch',
   'announce.sampleGame': 'Game on Twitch',
+  'announce.testMarker': '🧪 Test',
 
   // Config errors
   'config.required': 'Variable {name} is not set — fill in .env (see .env.example for a sample)',
@@ -61,6 +62,7 @@ export const en: Record<keyof typeof ru, string> = {
   'server.botDown': 'The bot is not running',
   'server.botDownReason': 'The bot is not running: {reason}',
   'server.testMessage': '✅ Connection check from the panel: the announcement bot is here',
+  'server.discordNotConfigured': 'Discord is not configured: set the webhook in settings',
   'server.adminRequired': 'Set "Your user ID" in settings: the image is uploaded to Telegram through your private chat with the bot',
   'server.imageTypes': 'Only JPEG, PNG and WebP are supported',
   'server.imageCaption': 'Announcement preview — uploaded from the panel',
@@ -147,6 +149,10 @@ export const en: Record<keyof typeof ru, string> = {
   'ui.testMessage': 'Test message to the group',
   'ui.probed': 'Checked',
   'ui.testSent': 'Sent — check the group',
+  'ui.testAnnounceTelegram': 'Test announcement to Telegram',
+  'ui.testAnnounceDiscord': 'Test announcement to Discord',
+  'ui.testAnnounceSentTelegram': 'Test announcement sent to Telegram (silent)',
+  'ui.testAnnounceSentDiscord': 'Test announcement sent to Discord',
   'ui.pill.down': 'Bot is not running',
   'ui.pill.dryRun': 'Test mode — messages are not sent',
   'ui.pill.ok': 'Bot is running',

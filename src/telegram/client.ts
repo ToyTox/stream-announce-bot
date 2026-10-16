@@ -48,6 +48,8 @@ export interface TelegramUpdate {
 export interface SendOptions {
   /** Тема форума; не передаётся, если TELEGRAM_TOPIC_ID пуст. */
   messageThreadId?: number;
+  /** Без звука уведомления (disable_notification). */
+  silent?: boolean;
 }
 
 const REQUEST_TIMEOUT = 15_000;
@@ -107,6 +109,7 @@ export class TelegramClient {
       // Ссылки уже есть в тексте; отдельная карточка предпросмотра только мешает.
       link_preview_options: { is_disabled: true },
       ...this.threadPayload(options),
+      ...(options?.silent ? { disable_notification: true } : {}),
     });
   }
 
@@ -118,6 +121,7 @@ export class TelegramClient {
       caption,
       parse_mode: 'HTML',
       ...this.threadPayload(options),
+      ...(options?.silent ? { disable_notification: true } : {}),
     });
   }
 

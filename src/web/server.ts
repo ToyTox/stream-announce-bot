@@ -180,6 +180,7 @@ export function createPanel(deps: PanelDeps): Panel {
       configError: null,
       dryRun: bot.config.dryRun,
       adminSet: bot.config.telegram.adminId !== undefined,
+      discordSet: bot.config.discord !== undefined,
       broadcast: broadcast && {
         ...broadcast,
         messageUrl: messageUrl(broadcast.chatId, broadcast.messageId),
@@ -219,6 +220,19 @@ export function createPanel(deps: PanelDeps): Panel {
         const bot = needBot();
         try {
           await bot.telegram.sendMessage(t(lang, 'server.testMessage'));
+        } catch (error) {
+          throw new HttpError(502, errorText(error));
+        }
+        return sendJson(res, 200, { ok: true });
+      }
+
+      case 'POST /api/test-announce/telegram':
+      case 'POST /api/test-announce/discord': {
+        const bot = needBot();
+        const channel = url.pathname.endsWith('/discord') ? 'discord' : 'telegram';
+        if (channel === 'discord' && !bot.config.discord) throw HttpError.localized(400, 'server.discordNotConfigured');
+        try {
+          await bot.announcer.testAnnounce(channel);
         } catch (error) {
           throw new HttpError(502, errorText(error));
         }

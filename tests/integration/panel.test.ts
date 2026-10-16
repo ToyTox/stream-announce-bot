@@ -68,8 +68,8 @@ function rawGet(path: string): Promise<{ status: number; type: string; body: Buf
   });
 }
 
-function startPanel(configOverrides: Parameters<typeof testConfig>[0] = {}): Promise<void> {
-  harness = createHarness(configOverrides);
+function startPanel(configOverrides: Parameters<typeof testConfig>[0] = {}, discord = false): Promise<void> {
+  harness = createHarness(configOverrides, undefined, { discord });
   const config = testConfig({
     telegram: { botToken: 'token', chatId: '-100123', adminId: ADMIN },
     twitch: { login: 'me', clientId: 'id', clientSecret: 'secret' },
@@ -413,6 +413,55 @@ describe('панель: язык', () => {
     await call('POST', '/api/test-message', { body: {}, headers: { 'accept-language': 'en' } });
 
     expect(harness.telegram.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Connection check'));
+  });
+
+  it('статус сообщает, настроен ли Discord', async () => {
+    expect((await call('GET', '/api/status')).json.discordSet).toBe(false);
+
+    await panel.close();
+    harness.cleanup();
+    await startPanel({ discord: { webhookUrl: 'https://discord.com/api/webhooks/1/x' } }, true);
+
+    expect((await call('GET', '/api/status')).json.discordSet).toBe(true);
+  });
+
+  it('тестовый анонс в Telegram: успех и 502 при ошибке отправки', async () => {
+    const ok = await call('POST', '/api/test-announce/telegram', { body: {} });
+
+    expect(ok.status).toBe(200);
+    expect(harness.telegram.sendMessage).toHaveBeenCalledWith(expect.stringContaining('🧪 Тест'), { silent: true });
+
+    harness.telegram.sendMessage.mockRejectedValueOnce(new Error('Telegram недоступен'));
+    const failed = await call('POST', '/api/test-announce/telegram', { body: {} });
+
+    expect(failed.status).toBe(502);
+    expect(failed.json.error).toContain('Telegram недоступен');
+  });
+
+  it('тестовый анонс в Discord без настройки отклоняется понятным сообщением', async () => {
+    const reply = await call('POST', '/api/test-announce/discord', { body: {}, headers: { 'accept-language': 'en' } });
+
+    expect(reply.status).toBe(400);
+    expect(reply.json.error).toBe('Discord is not configured: set the webhook in settings');
+    expect(harness.discord.send).not.toHaveBeenCalled();
+  });
+
+  it('тестовый анонс в Discord: успех и 502 при ошибке отправки', async () => {
+    await panel.close();
+    harness.cleanup();
+    await startPanel({ discord: { webhookUrl: 'https://discord.com/api/webhooks/1/x' } }, true);
+
+    const ok = await call('POST', '/api/test-announce/discord', { body: {} });
+
+    expect(ok.status).toBe(200);
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+
+    harness.discord.send.mockRejectedValueOnce(new Error('Discord недоступен'));
+    const failed = await call('POST', '/api/test-announce/discord', { body: {} });
+
+    expect(failed.status).toBe(502);
+    expect(failed.json.error).toContain('Discord недоступен');
   });
 
   it('превью анонса — на языке анонса, не интерфейса', async () => {

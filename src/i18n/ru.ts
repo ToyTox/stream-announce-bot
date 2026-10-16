@@ -18,6 +18,7 @@ export const ru = {
   'announce.fallbackTitle': 'Трансляция',
   'announce.sampleTitle': 'Название стрима на Twitch',
   'announce.sampleGame': 'Игра на Twitch',
+  'announce.testMarker': '🧪 Тест',
 
   // Ошибки конфига
   'config.required': 'Не задана переменная {name} — заполните .env (образец в .env.example)',
@@ -62,6 +63,7 @@ export const ru = {
   'server.botDown': 'Бот не запущен',
   'server.botDownReason': 'Бот не запущен: {reason}',
   'server.testMessage': '✅ Проверка связи из панели: бот анонсов на месте',
+  'server.discordNotConfigured': 'Discord не настроен: укажите вебхук в настройках',
   'server.adminRequired': 'Укажите в настройках «Ваш user ID»: картинка загружается в Telegram через вашу личку с ботом',
   'server.imageTypes': 'Подходят только JPEG, PNG и WebP',
   'server.imageCaption': 'Превью для анонсов — загружено из панели',
@@ -148,6 +150,10 @@ export const ru = {
   'ui.testMessage': 'Тестовое сообщение в группу',
   'ui.probed': 'Проверено',
   'ui.testSent': 'Отправлено — проверьте группу',
+  'ui.testAnnounceTelegram': 'Тестовый анонс в Telegram',
+  'ui.testAnnounceDiscord': 'Тестовый анонс в Discord',
+  'ui.testAnnounceSentTelegram': 'Тестовый анонс отправлен в Telegram (без звука)',
+  'ui.testAnnounceSentDiscord': 'Тестовый анонс отправлен в Discord',
   'ui.pill.down': 'Бот не запущен',
   'ui.pill.dryRun': 'Тестовый режим — сообщения не уходят',
   'ui.pill.ok': 'Бот работает',

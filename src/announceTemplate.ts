@@ -15,6 +15,8 @@ export interface AnnounceInput {
   links: ChannelLink[];
   /** Язык постоянных фраз; врезка и название не переводятся. По умолчанию русский. */
   language?: Lang;
+  /** Пометка в начале сообщения — только у тестовой отправки из панели. */
+  marker?: string;
 }
 
 /** Ссылка в сообщении: подпись своя, потому что VK Video и VK Live — разные ссылки одной площадки. */
@@ -75,7 +77,8 @@ function titleBlock(icon: string, title: string, game?: string | null): string {
 }
 
 export function renderAnnounce(input: AnnounceInput): string {
-  const head = `${t(input.language ?? DEFAULT_LANGUAGE, 'announce.greeting')}\n\n${titleBlock('🔴', input.title, input.game)}`;
+  const marker = input.marker ? `${escapeHtml(input.marker)}\n\n` : '';
+  const head = `${marker}${t(input.language ?? DEFAULT_LANGUAGE, 'announce.greeting')}\n\n${titleBlock('🔴', input.title, input.game)}`;
   const tailText = linksBlock(input.links);
 
   const custom = input.customText?.trim();
@@ -161,7 +164,8 @@ function discordTitleBlock(icon: string, title: string, game?: string | null): s
 
 /** Текст анонса для Discord — описание embed; состав тот же, что в Telegram. */
 export function renderDiscordAnnounce(input: AnnounceInput): string {
-  const head = `${t(input.language ?? DEFAULT_LANGUAGE, 'announce.greeting')}\n\n${discordTitleBlock('🔴', input.title, input.game)}`;
+  const marker = input.marker ? `${escapeMarkdown(input.marker)}\n\n` : '';
+  const head = `${marker}${t(input.language ?? DEFAULT_LANGUAGE, 'announce.greeting')}\n\n${discordTitleBlock('🔴', input.title, input.game)}`;
   const tailText = discordLinksBlock(input.links);
   const base = tailText ? `${head}\n\n${tailText}` : head;
 

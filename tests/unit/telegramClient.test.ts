@@ -50,6 +50,21 @@ describe('TelegramClient', () => {
     expect(post.mock.calls[0]?.[1]).toMatchObject({ message_thread_id: 42, photo: 'https://cdn/a.jpg' });
   });
 
+  it('тихая отправка передаёт disable_notification, обычная — нет', async () => {
+    post.mockResolvedValue({ data: { ok: true, result: { message_id: 1 } } });
+    const client = new TelegramClient('token', '-100123');
+
+    await client.sendMessage('тест', { silent: true });
+    await client.sendPhoto('https://cdn/a.jpg', 'подпись', { silent: true });
+    await client.sendMessage('тест');
+    await client.sendPhoto('https://cdn/a.jpg', 'подпись');
+
+    expect(post.mock.calls[0]?.[1]).toMatchObject({ disable_notification: true });
+    expect(post.mock.calls[1]?.[1]).toMatchObject({ disable_notification: true });
+    expect(post.mock.calls[2]?.[1]).not.toHaveProperty('disable_notification');
+    expect(post.mock.calls[3]?.[1]).not.toHaveProperty('disable_notification');
+  });
+
   it('повторяет запрос после 429 и уважает retry_after', async () => {
     vi.useFakeTimers();
     post
