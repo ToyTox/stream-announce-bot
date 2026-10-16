@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
+import { AnnounceImage } from '../../src/announceImage.js';
 import { Announcer, type AnnouncerEvent } from '../../src/announcer.js';
 import type { Config } from '../../src/config.js';
 import { openDb, type Db } from '../../src/db.js';
@@ -85,9 +86,12 @@ export type FakeTelegram = ReturnType<typeof fakeTelegram>;
 
 export function fakeDiscord() {
   return {
-    send: vi.fn(async (_payload: { embeds?: Array<{ description: string; image?: { url: string } }> }) => ({
-      id: '9000000000000001',
-    })),
+    send: vi.fn(
+      async (
+        _payload: { embeds?: Array<{ description: string; image?: { url: string } }> },
+        _file?: { name: string; type: string; data: Uint8Array }
+      ) => ({ id: '9000000000000001' })
+    ),
   };
 }
 
@@ -113,6 +117,9 @@ export interface Harness {
   clock: Clock;
   db: Db;
   store: Store;
+  image: AnnounceImage;
+  /** Папка данных: здесь лежит локальная копия картинки. */
+  dataDir: string;
   telegram: FakeTelegram;
   discord: FakeDiscord;
   watchers: Record<Platform, FakeWatcher>;
@@ -133,6 +140,8 @@ export function createHarness(
   const store = new Store(db);
   const clock = new Clock();
   const telegram = fakeTelegram();
+  const dataDir = join(dir, 'data');
+  const image = new AnnounceImage(dataDir, store, telegram as unknown as TelegramClient);
   const discord = fakeDiscord();
   const config = testConfig(configOverrides);
 
@@ -149,6 +158,7 @@ export function createHarness(
       watchers: list,
       telegram: telegram as unknown as TelegramClient,
       discord: withDiscord ? (discord as unknown as DiscordClient) : undefined,
+      image,
       config,
       now: clock.now,
       onEvent,
@@ -158,6 +168,8 @@ export function createHarness(
     clock,
     db,
     store,
+    image,
+    dataDir,
     telegram,
     discord,
     watchers,

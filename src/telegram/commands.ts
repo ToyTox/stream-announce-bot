@@ -1,3 +1,4 @@
+import type { AnnounceImage } from '../announceImage.js';
 import type { Announcer } from '../announcer.js';
 import type { Store } from '../store.js';
 import { t, type Lang } from '../i18n/index.js';
@@ -14,6 +15,7 @@ const ERROR_BACKOFF_MS = 5_000;
 export interface CommandListenerDeps {
   telegram: TelegramClient;
   store: Store;
+  image: AnnounceImage;
   announcer: Announcer;
   adminId: number;
   /** Язык ответов; функция, потому что его можно сменить в панели, не перезапуская бота. */
@@ -92,7 +94,13 @@ export class CommandListener {
 
     const photo = message.photo?.at(-1);
     if (photo) {
-      this.deps.store.setAnnouncePhoto(photo.file_id);
+      this.deps.image.set(photo.file_id);
+      // Копию качаем сразу, один раз; не вышло — file_id уже сохранён, докачаем при первом обращении.
+      try {
+        await this.deps.image.load();
+      } catch (error) {
+        console.warn('⚠️  Не удалось сохранить копию картинки, докачаю позже:', error instanceof Error ? error.message : error);
+      }
       await this.reply(this.t('cmd.photoSaved'));
       return;
     }
@@ -156,7 +164,7 @@ export class CommandListener {
 
   private async handleImage(argument: string): Promise<void> {
     if (argument === '-') {
-      this.deps.store.clearAnnouncePhoto();
+      this.deps.image.clear();
       await this.reply(this.t('cmd.imageCleared'));
       return;
     }

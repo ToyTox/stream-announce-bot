@@ -41,6 +41,13 @@ export interface DiscordPayload {
   embeds?: DiscordEmbed[];
 }
 
+/** Картинка, прикладываемая к сообщению файлом; в embed на неё ссылаются как attachment://<name>. */
+export interface DiscordFile {
+  name: string;
+  type: string;
+  data: Uint8Array;
+}
+
 export interface DiscordMessage {
   id: string;
 }
@@ -68,7 +75,7 @@ export class DiscordClient {
   }
 
   /** wait=true: Discord отвечает объектом сообщения — только по нему считаем доставку подтверждённой. */
-  async send(payload: DiscordPayload): Promise<DiscordMessage> {
+  async send(payload: DiscordPayload, file?: DiscordFile): Promise<DiscordMessage> {
     const body = {
       ...payload,
       // Пустой parse: @everyone и @here из названия стрима не должны пинговать сервер.
@@ -79,9 +86,10 @@ export class DiscordClient {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       let waitMs = 1000 * attempt;
       try {
+        // Форму собираем на каждую попытку заново: тело запроса одноразовое.
         const response = await this.http.post<Partial<DiscordMessage> | undefined>(
           `${this.webhookUrl}?wait=true`,
-          body
+          file ? multipartBody(body, file) : body
         );
         const id = response.data?.id;
         if (typeof id !== 'string' || id === '') {
@@ -99,6 +107,15 @@ export class DiscordClient {
 
     throw lastError ?? new DiscordError('upstream', 'webhook: неизвестная ошибка');
   }
+}
+
+/** Файл идёт в files[0], остальные параметры — JSON в payload_json; в attachments перечислены все файлы. */
+function multipartBody(body: object, file: DiscordFile): FormData {
+  const form = new FormData();
+  form.append('payload_json', JSON.stringify({ ...body, attachments: [{ id: 0, filename: file.name }] }));
+  // Копия в обычный ArrayBuffer: Blob не принимает представления над SharedArrayBuffer.
+  form.append('files[0]', new Blob([new Uint8Array(file.data)], { type: file.type }), file.name);
+  return form;
 }
 
 function errorBody(error: unknown): ApiErrorBody | undefined {

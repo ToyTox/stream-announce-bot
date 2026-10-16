@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -53,6 +53,21 @@ function call(
   });
 }
 
+/** GET с сырым телом: call() разбирает только текст и JSON. */
+function rawGet(path: string): Promise<{ status: number; type: string; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, method: 'GET', path }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () =>
+        resolve({ status: res.statusCode ?? 0, type: String(res.headers['content-type']), body: Buffer.concat(chunks) })
+      );
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 function startPanel(configOverrides: Parameters<typeof testConfig>[0] = {}): Promise<void> {
   harness = createHarness(configOverrides);
   const config = testConfig({
@@ -64,6 +79,7 @@ function startPanel(configOverrides: Parameters<typeof testConfig>[0] = {}): Pro
   const bot: Bot = {
     config,
     store: harness.store,
+    image: harness.image,
     telegram: harness.telegram as unknown as TelegramClient,
     announcer: harness.announcer,
     tickNow: () => harness.announcer.tick(),
@@ -148,6 +164,41 @@ describe('панель: статус и сообщение', () => {
     expect(harness.telegram.uploadPhoto.mock.calls[0]?.[0]).toBe(ADMIN);
     expect(harness.store.announcePhoto()).toBe('uploaded-large');
     expect((await call('GET', '/api/preview')).json.photo).toBe('custom');
+  });
+
+  it('загруженные байты сохраняются на диск с исходным типом и отдаются без обращения к Telegram', async () => {
+    await call('PUT', '/api/image', {
+      raw: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      headers: { 'content-type': 'image/png' },
+    });
+
+    const reply = await rawGet('/api/image/file');
+
+    expect(reply.type).toBe('image/png');
+    expect(reply.body).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    expect(harness.telegram.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('копии нет — предпросмотр один раз докачивает файл из Telegram как jpeg', async () => {
+    harness.store.setAnnouncePhoto('old-file-id');
+
+    const first = await rawGet('/api/image/file');
+    const second = await rawGet('/api/image/file');
+
+    expect(first.type).toBe('image/jpeg');
+    expect(second.body).toEqual(first.body);
+    expect(harness.telegram.downloadFile).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(harness.dataDir, 'announce-image.bin'))).toBe(true);
+  });
+
+  it('сброс картинки удаляет локальную копию', async () => {
+    await call('PUT', '/api/image', { raw: Buffer.from([1, 2]), headers: { 'content-type': 'image/webp' } });
+
+    await call('DELETE', '/api/image');
+
+    expect(harness.store.announcePhoto()).toBeNull();
+    expect(existsSync(join(harness.dataDir, 'announce-image.bin'))).toBe(false);
+    expect((await call('GET', '/api/image/file')).status).toBe(404);
   });
 
   it('без TELEGRAM_ADMIN_ID картинку загрузить нельзя', async () => {

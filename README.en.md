@@ -49,6 +49,7 @@ Enter the values on the "Settings" tab of the panel; at least one platform is re
 
 - The panel is available only on this computer, there is no password.
 - Uploading an image requires `TELEGRAM_ADMIN_ID`: the bot sends it to you in a private chat so that Telegram stores the file.
+- Your own image is also kept in the data folder next to the database: Discord gets it from there.
 - If the settings are filled in with an error, the bot will not start, but the panel will show the error — it can be fixed on the "Settings" tab.
 
 ## Bot commands
@@ -104,7 +105,7 @@ Thanks to everyone who dropped by the stream, you can watch the replay here:
 ▶️ VK Live
 ```
 
-The platform name is a clickable link. In Discord the content is the same, but it is a card. The announcement contains the platforms that were live at the moment of sending, the summary — all configured channels. The 🎮 line is absent if no category is chosen on Twitch; the line with the text is absent if it is not set. The announcement does not go out immediately but 90 seconds after the first platform, to wait for the others. The title and game are taken from Twitch, the preview is your own (if set) or the Twitch one. The detailed rules are in the [developer document](docs/development.en.md).
+The platform name is a clickable link. In Discord the content is the same, but it is a card. The announcement contains the platforms that were live at the moment of sending, the summary — all configured channels. The 🎮 line is absent if no category is chosen on Twitch; the line with the text is absent if it is not set. The announcement does not go out immediately but 90 seconds after the first platform, to wait for the others. The title and game are taken from Twitch, the preview is your own (if set) or the Twitch one. Discord gets the same picture: your own, otherwise the Twitch preview, otherwise text only. The detailed rules are in the [developer document](docs/development.en.md).
 
 ## Updates and data
 

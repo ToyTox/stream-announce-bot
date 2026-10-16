@@ -167,8 +167,6 @@ function errorText(error: unknown): string {
 
 export function createPanel(deps: PanelDeps): Panel {
   const { runtime, env, envPath, defaults = {}, version = '' } = deps;
-  /** Последнее скачанное превью: Telegram отдаёт файл по file_id, качать его на каждый показ незачем. */
-  let imageCache: { fileId: string; data: Uint8Array } | null = null;
 
   function status(lang: Lang) {
     const bot = runtime.bot;
@@ -266,31 +264,28 @@ export function createPanel(deps: PanelDeps): Panel {
         }
         if (!fileId) throw HttpError.localized(502, 'server.noFileId');
 
-        bot.store.setAnnouncePhoto(fileId);
-        imageCache = { fileId, data };
+        bot.image.set(fileId, { data, type });
         return sendJson(res, 200, { ok: true });
       }
 
       case 'GET /api/image/file': {
         const bot = needBot();
-        const fileId = bot.store.announcePhoto();
-        if (!fileId) throw HttpError.localized(404, 'server.noImage');
-        if (imageCache?.fileId !== fileId) {
-          try {
-            imageCache = { fileId, data: await bot.telegram.downloadFile(fileId) };
-          } catch (error) {
-            throw new HttpError(502, errorText(error));
-          }
+        if (!bot.store.announcePhoto()) throw HttpError.localized(404, 'server.noImage');
+        // Копия на диске; если её нет, load() один раз скачает файл из Telegram.
+        let image: Awaited<ReturnType<typeof bot.image.load>>;
+        try {
+          image = await bot.image.load();
+        } catch (error) {
+          throw new HttpError(502, errorText(error));
         }
-        // Фото Telegram всегда пережимает в JPEG.
-        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
-        res.end(imageCache.data);
+        if (!image) throw HttpError.localized(404, 'server.noImage');
+        res.writeHead(200, { 'Content-Type': image.type, 'Cache-Control': 'no-store' });
+        res.end(image.data);
         return;
       }
 
       case 'DELETE /api/image':
-        needBot().store.clearAnnouncePhoto();
-        imageCache = null;
+        needBot().image.clear();
         return sendJson(res, 200, { ok: true });
 
       case 'GET /api/preview': {

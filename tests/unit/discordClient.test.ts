@@ -119,4 +119,54 @@ describe('DiscordClient', () => {
 
     expect((error as DiscordError).message).not.toContain('secret-token');
   });
+
+  describe('с вложением', () => {
+    const file = { name: 'announce.png', type: 'image/png', data: new Uint8Array([1, 2, 3]) };
+    const withImage = { embeds: [{ description: 'привет', image: { url: 'attachment://announce.png' } }] };
+
+    it('шлёт multipart: payload_json с attachments и allowed_mentions, файл в files[0]', async () => {
+      post.mockResolvedValue({ data: { id: '7' } });
+
+      const message = await new DiscordClient(HOOK).send(withImage, file);
+
+      expect(message.id).toBe('7');
+      const [url, form] = post.mock.calls[0] as [string, FormData];
+      expect(url).toBe(`${HOOK}?wait=true`);
+      expect(form).toBeInstanceOf(FormData);
+      expect(JSON.parse(form.get('payload_json') as string)).toEqual({
+        ...withImage,
+        allowed_mentions: { parse: [] },
+        attachments: [{ id: 0, filename: 'announce.png' }],
+      });
+      const part = form.get('files[0]') as File;
+      expect(part.name).toBe('announce.png');
+      expect(part.type).toBe('image/png');
+      expect(new Uint8Array(await part.arrayBuffer())).toEqual(file.data);
+    });
+
+    it('повторяет после 429 и 5xx, собирая форму заново', async () => {
+      vi.useFakeTimers();
+      post
+        .mockRejectedValueOnce(axiosError(429, { retry_after: 0.1 }))
+        .mockRejectedValueOnce(axiosError(502, {}))
+        .mockResolvedValueOnce({ data: { id: '8' } });
+
+      const promise = new DiscordClient(HOOK).send(withImage, file);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect((await promise).id).toBe('8');
+      expect(post).toHaveBeenCalledTimes(3);
+      const forms = post.mock.calls.map((call) => call[1] as FormData);
+      expect(new Set(forms).size).toBe(3);
+      expect(await (forms[2]!.get('files[0]') as File).arrayBuffer()).toHaveProperty('byteLength', 3);
+    });
+
+    it('без файла уходит JSON, как раньше', async () => {
+      post.mockResolvedValue({ data: { id: '1' } });
+
+      await new DiscordClient(HOOK).send(payload);
+
+      expect(post.mock.calls[0]?.[1]).not.toBeInstanceOf(FormData);
+    });
+  });
 });

@@ -1,3 +1,5 @@
+import { dirname } from 'node:path';
+import { AnnounceImage } from './announceImage.js';
 import { Announcer, type AnnouncerEvent } from './announcer.js';
 import { ConfigError, loadConfig, type Config, type Env } from './config.js';
 import { openDb } from './db.js';
@@ -15,6 +17,8 @@ import { YouTubeWatcher } from './watchers/youtube.js';
 export interface Bot {
   config: Config;
   store: Store;
+  /** Своя картинка анонса: file_id в базе и локальная копия рядом с ней. */
+  image: AnnounceImage;
   telegram: TelegramClient;
   /** Есть только при заданном DISCORD_WEBHOOK_URL. */
   discord?: DiscordClient;
@@ -41,9 +45,10 @@ export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => vo
     config.telegram.chatId,
     config.telegram.topicId
   );
+  const image = new AnnounceImage(dirname(config.databasePath), store, telegram);
   const discord = config.discord ? new DiscordClient(config.discord.webhookUrl) : undefined;
   const watchers = buildWatchers(config);
-  const announcer = new Announcer({ store, watchers, telegram, discord, config, onEvent });
+  const announcer = new Announcer({ store, watchers, telegram, discord, image, config, onEvent });
 
   console.log(
     `👀 Слежу за площадками: ${watchers.map((watcher) => PLATFORM_LABELS[watcher.platform]).join(', ')}`
@@ -61,6 +66,7 @@ export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => vo
     listener = new CommandListener({
       telegram,
       store,
+      image,
       announcer,
       adminId: config.telegram.adminId,
       // Язык меняется из панели без перезапуска бота, поэтому читается при каждом ответе.
@@ -92,6 +98,7 @@ export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => vo
   return {
     config,
     store,
+    image,
     telegram,
     discord,
     announcer,

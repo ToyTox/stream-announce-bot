@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHarness, type Harness } from '../helpers/announcerHarness.js';
 import { CommandListener } from '../../src/telegram/commands.js';
@@ -12,6 +14,7 @@ async function deliver(message: NonNullable<TelegramUpdate['message']>, language
   const listener = new CommandListener({
     telegram: harness.telegram as unknown as TelegramClient,
     store: harness.store,
+    image: harness.image,
     announcer: harness.announcer,
     adminId: ADMIN,
     language: () => language,
@@ -48,6 +51,22 @@ describe('CommandListener: превью', () => {
     );
 
     expect(harness.store.announcePhoto()).toBe('large');
+    expect(harness.telegram.downloadFile).toHaveBeenCalledWith('large');
+    expect(harness.image.read()).toEqual({ data: new Uint8Array([0xff, 0xd8, 0xff]), type: 'image/jpeg' });
+  });
+
+  it('если фото не скачалось, file_id всё равно сохраняется, а копию докачают позже', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    harness.telegram.downloadFile.mockRejectedValueOnce(new Error('нет сети'));
+
+    await deliver(chat({ photo: [{ file_id: 'large', width: 1280, height: 720 }] }));
+
+    expect(harness.store.announcePhoto()).toBe('large');
+    expect(harness.image.read()).toBeNull();
+    expect(harness.telegram.sendTo).toHaveBeenCalled();
+
+    expect(await harness.image.load()).toMatchObject({ type: 'image/jpeg' });
+    expect(harness.image.read()).not.toBeNull();
   });
 
   it('фото от чужого игнорируется', async () => {
@@ -57,19 +76,22 @@ describe('CommandListener: превью', () => {
   });
 
   it('/image - сбрасывает превью', async () => {
-    harness.store.setAnnouncePhoto('large');
+    harness.image.set('large', { data: new Uint8Array([1]), type: 'image/jpeg' });
 
     await deliver(chat({ text: '/image -' }));
 
     expect(harness.store.announcePhoto()).toBeNull();
+    expect(harness.image.read()).toBeNull();
+    expect(existsSync(join(harness.dataDir, 'announce-image.bin'))).toBe(false);
   });
 
   it('/image_clear сбрасывает превью так же, как /image -', async () => {
-    harness.store.setAnnouncePhoto('large');
+    harness.image.set('large', { data: new Uint8Array([1]), type: 'image/jpeg' });
 
     await deliver(chat({ text: '/image_clear' }));
 
     expect(harness.store.announcePhoto()).toBeNull();
+    expect(existsSync(join(harness.dataDir, 'announce-image.bin'))).toBe(false);
   });
 });
 
@@ -104,6 +126,7 @@ describe('CommandListener: язык ответов', () => {
     const listener = new CommandListener({
       telegram: harness.telegram as unknown as TelegramClient,
       store: harness.store,
+    image: harness.image,
       announcer: harness.announcer,
       adminId: ADMIN,
       language: () => language,
