@@ -7,8 +7,10 @@ import {
   ChannelLink,
   FinishedInput,
 } from './announceTemplate.js';
+import axios from 'axios';
+import type { AnnounceImage } from './announceImage.js';
 import type { Config } from './config.js';
-import { DiscordClient, DiscordError } from './discord/client.js';
+import { DiscordClient, DiscordError, type DiscordFile } from './discord/client.js';
 import { t } from './i18n/index.js';
 import { Store, type DeliveryRow } from './store.js';
 import { TelegramClient, TelegramError } from './telegram/client.js';
@@ -35,6 +37,8 @@ export interface AnnouncerDeps {
   telegram: TelegramClient;
   /** Есть только при заданном DISCORD_WEBHOOK_URL. */
   discord?: DiscordClient;
+  /** Локальная копия своей картинки: из неё Discord получает файл. */
+  image: AnnounceImage;
   config: Config;
   /** Подменяется в тестах, чтобы гонять grace-периоды без ожидания. */
   now?: () => number;
@@ -66,7 +70,21 @@ interface AnnounceRequest {
   customPhoto: string | null;
   /** Превью приоритетной площадки — обычный URL, годится всем. */
   thumbnailUrl?: string | null;
+  /** Платформа, с которой взято превью: Discord берёт только превью Twitch. */
+  thumbnailPlatform?: Platform;
 }
+
+/** Типы, которые Discord показывает в embed. */
+const DISCORD_IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+/** Лимит Discord на файл по умолчанию — 20 MiB; берём с запасом на остальное тело запроса. */
+const DISCORD_IMAGE_LIMIT = 10 * 1024 * 1024;
+const THUMBNAIL_TIMEOUT = 10_000;
 
 /** Куда ушло сообщение: id сообщения и, если есть, адресат (чат). */
 interface Sent {
@@ -154,25 +172,61 @@ class DiscordChannel implements DeliveryChannel {
   readonly label = 'Discord';
   readonly throwOnPermanent = false;
 
-  constructor(private readonly client: DiscordClient) {}
+  constructor(
+    private readonly client: DiscordClient,
+    private readonly image: AnnounceImage
+  ) {}
 
   isPermanent(error: unknown): boolean {
     return error instanceof DiscordError && !error.retriable;
   }
 
-  prepareAnnounce({ input, thumbnailUrl }: AnnounceRequest): Prepared<Sent> {
-    const text = renderDiscordAnnounce(input);
-    // file_id из /image Discord не прочитает; без http(s)-превью сообщение уходит без картинки.
-    const image = thumbnailUrl && /^https?:\/\//i.test(thumbnailUrl) ? { url: thumbnailUrl } : undefined;
+  prepareAnnounce(request: AnnounceRequest): Prepared<Sent> {
+    const text = renderDiscordAnnounce(request.input);
     return {
       text,
       send: async () => {
-        const message = await this.client.send({
-          embeds: [{ description: text, ...(image ? { image } : {}) }],
-        });
+        // Картинку грузим только перед отправкой: в DRY_RUN сюда не доходим.
+        const file = await this.pickImage(request);
+        const message = await this.client.send(
+          {
+            embeds: [{ description: text, ...(file ? { image: { url: `attachment://${file.name}` } } : {}) }],
+          },
+          file
+        );
         return { messageId: message.id, target: null };
       },
     };
+  }
+
+  /**
+   * Своя картинка, иначе превью Twitch (только если приоритетная площадка — Twitch), иначе без картинки.
+   * Сбой загрузки не мешает анонсу: он уходит без картинки.
+   */
+  private async pickImage({ customPhoto, thumbnailUrl, thumbnailPlatform }: AnnounceRequest): Promise<DiscordFile | undefined> {
+    if (customPhoto) {
+      // Свою картинку на превью Twitch не подменяем: покажет не то, что выбрал стример.
+      try {
+        const stored = await this.image.load();
+        return stored ? toDiscordFile('announce', stored.type, stored.data) : undefined;
+      } catch (error) {
+        console.warn('⚠️  Своя картинка недоступна, Discord получит анонс без картинки:', describe(error));
+        return undefined;
+      }
+    }
+    if (thumbnailPlatform !== 'twitch' || !thumbnailUrl || !/^https?:\/\//i.test(thumbnailUrl)) return undefined;
+    try {
+      const response = await axios.get<ArrayBuffer>(thumbnailUrl, {
+        responseType: 'arraybuffer',
+        timeout: THUMBNAIL_TIMEOUT,
+        maxContentLength: DISCORD_IMAGE_LIMIT,
+      });
+      const type = String(response.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+      return toDiscordFile('preview', type, new Uint8Array(response.data));
+    } catch (error) {
+      console.warn('⚠️  Превью Twitch не скачалось, Discord получит анонс без картинки:', describe(error));
+      return undefined;
+    }
   }
 
   prepareFinished(input: FinishedInput): Prepared<void> {
@@ -184,6 +238,16 @@ class DiscordChannel implements DeliveryChannel {
       },
     };
   }
+}
+
+/** Файл для embed: тип должен быть картинкой, которую Discord покажет, размер — в пределах лимита. */
+function toDiscordFile(name: string, type: string, data: Uint8Array): DiscordFile {
+  const extension = DISCORD_IMAGE_EXTENSIONS[type];
+  if (!extension) throw new Error(`тип ${type || 'неизвестный'} не картинка для Discord`);
+  if (data.length === 0 || data.length > DISCORD_IMAGE_LIMIT) {
+    throw new Error(`размер картинки ${data.length} Б вне допустимого`);
+  }
+  return { name: `${name}.${extension}`, type, data };
 }
 
 type ProbeResult =
@@ -226,7 +290,7 @@ export class Announcer {
     this.store = deps.store;
     this.watchers = deps.watchers;
     this.channels = [new TelegramChannel(deps.telegram, deps.config.telegram.chatId)];
-    if (deps.discord) this.channels.push(new DiscordChannel(deps.discord));
+    if (deps.discord) this.channels.push(new DiscordChannel(deps.discord, deps.image));
     this.config = deps.config;
     this.now = deps.now ?? (() => Date.now());
     this.onEvent = deps.onEvent;
@@ -375,6 +439,7 @@ export class Announcer {
       },
       customPhoto: this.store.announcePhoto(),
       thumbnailUrl: source?.thumbnailUrl,
+      thumbnailPlatform: source?.platform,
     };
 
     let fatal: unknown;

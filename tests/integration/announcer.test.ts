@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnnouncerEvent } from '../../src/announcer.js';
 import { DiscordError } from '../../src/discord/client.js';
@@ -306,10 +307,18 @@ describe('Announcer: Telegram и Discord', () => {
     return harness.discord.send.mock.calls[call]?.[0].embeds?.[0];
   }
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   beforeEach(() => {
     harness.cleanup();
     harness = createHarness({}, undefined, { discord: true });
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: new Uint8Array([0xff, 0xd8, 0xff]).buffer,
+      headers: { 'content-type': 'image/jpeg' },
+    });
     harness.watchers.twitch.state = liveStream('twitch', harness.clock);
   });
 
@@ -319,7 +328,8 @@ describe('Announcer: Telegram и Discord', () => {
     expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
     expect(harness.discord.send).toHaveBeenCalledTimes(1);
     expect(embed()?.description).toContain('▶️ [Twitch](https://twitch.tv/me)');
-    expect(embed()?.image).toEqual({ url: 'https://cdn/twitch.jpg' });
+    expect(embed()?.image).toEqual({ url: 'attachment://preview.jpg' });
+    expect(harness.discord.send.mock.calls[0]?.[1]).toMatchObject({ name: 'preview.jpg', type: 'image/jpeg' });
     expect(harness.store.openBroadcast()?.announcedAt).not.toBeNull();
     expect(harness.announcer.status()?.deliveries).toEqual([
       { channel: 'telegram', label: 'Telegram', state: 'sent' },
@@ -327,12 +337,70 @@ describe('Announcer: Telegram и Discord', () => {
     ]);
   });
 
-  it('своя картинка из /image в Discord не уходит, берётся превью Twitch', async () => {
-    harness.store.setAnnouncePhoto('AgACfileId');
+  it('своя картинка с диска уходит в Discord файлом, Telegram за ней не обращается', async () => {
+    harness.image.set('AgACfileId', { data: new Uint8Array([9, 8, 7]), type: 'image/png' });
     await run(3);
 
     expect(harness.telegram.sendPhoto.mock.calls[0]?.[0]).toBe('AgACfileId');
-    expect(embed()?.image).toEqual({ url: 'https://cdn/twitch.jpg' });
+    expect(harness.telegram.downloadFile).not.toHaveBeenCalled();
+    expect(axios.get).not.toHaveBeenCalled();
+    expect(embed()?.image).toEqual({ url: 'attachment://announce.png' });
+    expect(harness.discord.send.mock.calls[0]?.[1]).toEqual({
+      name: 'announce.png',
+      type: 'image/png',
+      data: new Uint8Array([9, 8, 7]),
+    });
+  });
+
+  it('копии на диске нет — картинка один раз докачивается из Telegram', async () => {
+    harness.store.setAnnouncePhoto('old-file-id');
+    await run(3);
+
+    expect(harness.telegram.downloadFile).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send.mock.calls[0]?.[1]).toMatchObject({ name: 'announce.jpg', type: 'image/jpeg' });
+    expect(harness.image.read()).not.toBeNull();
+  });
+
+  it('копию не удалось получить — анонс без картинки, превью Twitch не подставляется, доставка засчитана', async () => {
+    harness.store.setAnnouncePhoto('old-file-id');
+    harness.telegram.downloadFile.mockRejectedValue(new Error('нет сети'));
+    await run(3);
+
+    expect(embed()).not.toHaveProperty('image');
+    expect(harness.discord.send.mock.calls[0]?.[1]).toBeUndefined();
+    expect(axios.get).not.toHaveBeenCalled();
+    expect(harness.announcer.status()?.deliveries.map((item) => item.state)).toEqual(['sent', 'sent']);
+  });
+
+  it('сбой загрузки превью Twitch — анонс без картинки, доставка засчитана', async () => {
+    vi.mocked(axios.get).mockRejectedValue(new Error('timeout'));
+    await run(3);
+
+    expect(embed()).not.toHaveProperty('image');
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+    expect(harness.announcer.status()?.deliveries.map((item) => item.state)).toEqual(['sent', 'sent']);
+  });
+
+  it('ответ превью не картинка — анонс без картинки', async () => {
+    vi.mocked(axios.get).mockResolvedValue({
+      data: new TextEncoder().encode('<html>').buffer,
+      headers: { 'content-type': 'text/html' },
+    });
+    await run(3);
+
+    expect(embed()).not.toHaveProperty('image');
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['youtube', 'vkvideo'] as const)('приоритетная площадка %s — Discord получает анонс текстом', async (platform) => {
+    harness.cleanup();
+    harness = createHarness({ primaryPlatform: platform }, undefined, { discord: true });
+    harness.watchers[platform].state = liveStream(platform, harness.clock);
+    await run(3);
+
+    expect(embed()).not.toHaveProperty('image');
+    expect(axios.get).not.toHaveBeenCalled();
+    expect(harness.discord.send.mock.calls[0]?.[1]).toBeUndefined();
   });
 
   it('нет превью — Discord получает сообщение без картинки', async () => {
@@ -524,6 +592,20 @@ describe('Announcer: Telegram и Discord', () => {
     expect(harness.telegram.sendPhoto).not.toHaveBeenCalled();
     expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
     expect(harness.discord.send).not.toHaveBeenCalled();
+    expect(axios.get).not.toHaveBeenCalled();
     expect(harness.store.openBroadcast()).toBeNull();
+  });
+
+  it('DRY_RUN не качает ни превью, ни свою картинку', async () => {
+    harness.cleanup();
+    harness = createHarness({ dryRun: true }, undefined, { discord: true });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    harness.store.setAnnouncePhoto('old-file-id');
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    await run(3);
+
+    expect(harness.telegram.downloadFile).not.toHaveBeenCalled();
+    expect(axios.get).not.toHaveBeenCalled();
   });
 });
