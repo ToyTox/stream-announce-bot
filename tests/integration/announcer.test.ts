@@ -733,3 +733,112 @@ describe('Announcer: тестовый анонс', () => {
     expect(harness.announcer.preview().announce).not.toContain('🧪');
   });
 });
+
+describe('Announcer: только Discord', () => {
+  function embed(call = 0) {
+    return harness.discord.send.mock.calls[call]?.[0].embeds?.[0];
+  }
+
+  beforeEach(() => {
+    harness.cleanup();
+    harness = createHarness({}, undefined, { discord: true, telegram: false });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: new Uint8Array([0xff, 0xd8, 0xff]).buffer,
+      headers: { 'content-type': 'image/jpeg' },
+    });
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('анонс и итог уходят только в Discord, status() без чата и сообщения Telegram', async () => {
+    await run(3);
+
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+    expect(embed()?.description).toContain('▶️ [Twitch](https://twitch.tv/me)');
+    expect(harness.telegram.sendPhoto).not.toHaveBeenCalled();
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+    expect(harness.announcer.status()).toMatchObject({
+      chatId: null,
+      messageId: null,
+      deliveries: [{ channel: 'discord', label: 'Discord', state: 'sent' }],
+    });
+
+    harness.watchers.twitch.state = null;
+    await run(5);
+
+    expect(harness.discord.send).toHaveBeenCalledTimes(2);
+    expect(embed(1)?.description).toContain('Эфир завершён');
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('рестарт не дублирует анонс', async () => {
+    await run(3);
+    harness.announcer = harness.restart(true);
+    await run(3);
+
+    expect(harness.discord.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('testAnnounce по Telegram, которого нет, даёт понятную ошибку', async () => {
+    await expect(harness.announcer.testAnnounce('telegram')).rejects.toThrow('telegram: площадка не настроена');
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('картинка, загруженная из панели, уходит в Discord файлом', async () => {
+    harness.image.setLocal({ data: new Uint8Array([1, 2, 3]), type: 'image/png' });
+    await run(3);
+
+    expect(embed()?.image).toEqual({ url: 'attachment://announce.png' });
+    expect(harness.discord.send.mock.calls[0]?.[1]).toEqual({
+      name: 'announce.png',
+      type: 'image/png',
+      data: new Uint8Array([1, 2, 3]),
+    });
+    expect(axios.get).not.toHaveBeenCalled();
+  });
+
+  it('старая картинка Telegram с копией на диске берётся из копии без запросов к Telegram', async () => {
+    harness.image.set('AgACfileId', { data: new Uint8Array([9, 8, 7]), type: 'image/jpeg' });
+    await run(3);
+
+    expect(harness.discord.send.mock.calls[0]?.[1]).toMatchObject({ name: 'announce.jpg', data: new Uint8Array([9, 8, 7]) });
+    expect(harness.telegram.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('старая картинка Telegram без копии молча пропускается: анонс с превью Twitch, Telegram не трогаем', async () => {
+    harness.store.setAnnouncePhoto('old-file-id');
+    await run(3);
+
+    expect(harness.telegram.downloadFile).not.toHaveBeenCalled();
+    expect(axios.get).toHaveBeenCalledTimes(1);
+    expect(harness.discord.send.mock.calls[0]?.[1]).toMatchObject({ name: 'preview.jpg' });
+    expect(harness.image.has()).toBe(false);
+  });
+});
+
+describe('Announcer: картинка только с локальным файлом при включённом Telegram', () => {
+  beforeEach(() => {
+    harness.cleanup();
+    harness = createHarness({}, undefined, { discord: true });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('Telegram отправляет файл, а не file_id, Discord получает тот же файл', async () => {
+    harness.image.setLocal({ data: new Uint8Array([5, 6]), type: 'image/webp' });
+    await run(3);
+
+    expect(harness.telegram.sendPhotoFile).toHaveBeenCalledTimes(1);
+    expect(harness.telegram.sendPhotoFile.mock.calls[0]?.slice(0, 2)).toEqual([new Uint8Array([5, 6]), 'image/webp']);
+    expect(harness.telegram.sendPhoto).not.toHaveBeenCalled();
+    expect(harness.discord.send.mock.calls[0]?.[1]).toMatchObject({ name: 'announce.webp' });
+  });
+});

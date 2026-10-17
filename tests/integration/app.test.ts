@@ -59,6 +59,29 @@ describe('startApp', () => {
     expect(app.panel!.port).toBeGreaterThan(0);
   });
 
+  it('стартует без Telegram, если задан Discord', async () => {
+    writeFileSync(
+      envPath,
+      `DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1/tok\nVKVIDEO_CHANNEL=me\nTELEGRAM_ADMIN_ID=7\nDATABASE_PATH=${join(dir, 'x.db')}\n`
+    );
+
+    app = await startApp({ envPath, port: 0, inheritProcessEnv: false, botFactory: factory });
+
+    expect(configs[0]?.telegram).toBeUndefined();
+    expect(configs[0]?.discord).toBeDefined();
+    expect(app.runtime.bot).not.toBeNull();
+  });
+
+  it('без Telegram и Discord бот не стартует, панель показывает причину', async () => {
+    writeFileSync(envPath, 'VKVIDEO_CHANNEL=me\n');
+
+    app = await startApp({ envPath, port: 0, inheritProcessEnv: false, botFactory: factory });
+
+    expect(app.runtime.bot).toBeNull();
+    expect(app.runtime.configError).toContain('площадка доставки');
+    expect(app.panel).toBeDefined();
+  });
+
   it('подставляет значения по умолчанию только для отсутствующих ключей', async () => {
     writeFileSync(envPath, 'TELEGRAM_BOT_TOKEN=tok\nTELEGRAM_CHAT_ID=-1\nVKVIDEO_CHANNEL=me\n');
 
@@ -92,7 +115,7 @@ describe('startApp', () => {
     app = await startApp({ envPath, port: 0, inheritProcessEnv: false, botFactory: factory });
 
     expect(app.runtime.bot).toBeNull();
-    expect(app.runtime.configError).toContain('TELEGRAM_BOT_TOKEN');
+    expect(app.runtime.configError).toContain('площадка доставки');
     expect(app.panel).toBeDefined();
   });
 

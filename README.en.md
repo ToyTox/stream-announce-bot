@@ -4,7 +4,7 @@
 
 The bot watches Twitch, YouTube and VK Live and, when you start a stream, posts a single announcement with links to every platform you are live on to a Telegram group (and, if a webhook is configured, to a Discord channel). OBS starts the stream everywhere at once, so instead of several notifications you get one message. When the stream ends, the bot sends a separate message with the duration and links to the recordings.
 
-You can manage the bot from the app window or with commands in a private chat on Telegram. Discord has no commands: it only receives messages.
+You can manage the bot from the app window or with commands in a private chat on Telegram. Discord has no commands: it only receives messages. Telegram is optional if a Discord webhook is set: then the bot announces only to Discord and is managed through the panel.
 
 ## Download and install
 
@@ -25,6 +25,8 @@ On the first launch the window opens on the "Settings" tab. After that the app l
 
 ## Bot setup
 
+The Telegram block (steps 1–5) is optional if `DISCORD_WEBHOOK_URL` is set (step 9). Telegram is enabled when both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set; only one of the two is an error. At least one delivery destination is required: Telegram or Discord.
+
 1. **Telegram bot**: send `@BotFather` the `/newbot` command and get a token — this is `TELEGRAM_BOT_TOKEN`.
 2. **Group**: add the bot to the group. Admin rights are not required unless members are not allowed to write in the group.
 3. **Group ID** (`TELEGRAM_CHAT_ID`): copy a link to any message in the group — `t.me/c/2241331974/…` — and put `-100` before the number: `-1002241331974`.
@@ -33,8 +35,8 @@ On the first launch the window opens on the "Settings" tab. After that the app l
 6. **Twitch**: create an app at [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps) (Redirect URL — `https://localhost`, client type — "Confidential") and take the Client ID and Client Secret. The login is as in the address `twitch.tv/<login>`.
 7. **YouTube**: the channel ID like `UC…` is at [youtube.com/account_advanced](https://www.youtube.com/account_advanced). The `@…` handle will not work.
 8. **VK Live**: the channel name from the address `live.vkvideo.ru/<name>`. For the recordings link, put the channel on vkvideo.ru into `VKVIDEO_REPLAY_URL`.
-9. **Discord** (optional): Server Settings → Integrations → Webhooks → New Webhook → choose the channel → "Copy Webhook URL". An address like `https://discord.com/api/webhooks/<id>/<token>` is `DISCORD_WEBHOOK_URL`. The address contains a token: do not show it to anyone.
-10. **Check**: on the "Status" tab click "Test message to the group".
+9. **Discord** (optional if Telegram is configured): Server Settings → Integrations → Webhooks → New Webhook → choose the channel → "Copy Webhook URL". An address like `https://discord.com/api/webhooks/<id>/<token>` is `DISCORD_WEBHOOK_URL`. The address contains a token: do not show it to anyone.
+10. **Check**: on the "Status" tab click "Connection check": the test goes to every configured destination and the result is shown for each.
 
 Enter the values on the "Settings" tab of the panel; at least one platform is required. Each group there also has a collapsed "How to get it" guide.
 
@@ -42,14 +44,14 @@ Enter the values on the "Settings" tab of the panel; at least one platform is re
 
 | Tab | What is there |
 |-----|---------------|
-| Status | Whether you are live, whether the announcement was sent (with a link to the message), the state of each platform and check errors. The "Check now", "Test message to the group", "Test announcement to Telegram" and "Test announcement to Discord" buttons (a real announcement marked "🧪 Test" sent only to the chosen platform; silent in Telegram) |
+| Status | Whether you are live, whether the announcement was sent (with a link to the message), the state of each platform and check errors. The "Check now", "Connection check", "Test announcement to Telegram" and "Test announcement to Discord" buttons (a real announcement marked "🧪 Test" sent only to the chosen platform; silent in Telegram); buttons of destinations that are not configured are hidden |
 | Message | The text for the announcement (like `/text`), your own preview — uploading an image from the computer, a preview of the announcement and of the stream-ended message |
 | Settings | All parameters as a form. Secrets are shown masked, an empty field means "do not change". Saving validates the values and restarts the bot without a repeated announcement. The "Import .env…" button replaces the settings with a whole file |
 | Log | The last 300 lines of what the bot writes |
 
 - The panel is available only on this computer, there is no password.
-- Uploading an image requires `TELEGRAM_ADMIN_ID`: the bot sends it to you in a private chat so that Telegram stores the file.
-- Your own image is also kept in the data folder next to the database: Discord gets it from there.
+- Your own image is kept in the data folder next to the database: Discord gets it from there. With Telegram and `TELEGRAM_ADMIN_ID`, the bot also sends it to you in a private chat so that Telegram stores the file_id. Without Telegram or without `TELEGRAM_ADMIN_ID` the image is uploaded from the panel and stored only locally (sent to Telegram, if enabled, as a file).
+- Without Telegram, bot commands and messages to the admin are unavailable; everything else, including the announcement text and the image, is done in the panel.
 - If the settings are filled in with an error, the bot will not start, but the panel will show the error — it can be fixed on the "Settings" tab.
 
 ## Bot commands

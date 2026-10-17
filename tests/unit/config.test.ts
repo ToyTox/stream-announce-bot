@@ -13,8 +13,8 @@ describe('loadConfig', () => {
   it('собирает конфиг с дефолтами', () => {
     const config = loadConfig(base);
 
-    expect(config.telegram.chatId).toBe('-1002241331974');
-    expect(config.telegram.topicId).toBeUndefined();
+    expect(config.telegram?.chatId).toBe('-1002241331974');
+    expect(config.telegram?.topicId).toBeUndefined();
     expect(config.twitch).toEqual({ login: 'me', clientId: 'cid', clientSecret: 'secret' });
     expect(config.youtube).toBeUndefined();
     expect(config.announceGraceMs).toBe(90_000);
@@ -22,14 +22,57 @@ describe('loadConfig', () => {
     expect(config.announceEnd).toBe(true);
   });
 
-  it('требует токен бота', () => {
-    expect(() => loadConfig({ ...base, TELEGRAM_BOT_TOKEN: '' })).toThrow(ConfigError);
+  it('половина настроек Telegram — ошибка', () => {
+    expect(() => loadConfig({ ...base, TELEGRAM_BOT_TOKEN: '' })).toThrow(/TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID/);
+    expect(() => loadConfig({ ...base, TELEGRAM_CHAT_ID: '' })).toThrow(ConfigError);
   });
 
   it('требует хотя бы одну платформу', () => {
     expect(() =>
       loadConfig({ TELEGRAM_BOT_TOKEN: 'token', TELEGRAM_CHAT_ID: '-100' })
     ).toThrow(/Не настроена ни одна платформа/);
+  });
+
+  describe('площадки доставки', () => {
+    const twitch = { TWITCH_LOGIN: 'me', TWITCH_CLIENT_ID: 'cid', TWITCH_CLIENT_SECRET: 'secret' };
+    const hook = 'https://discord.com/api/webhooks/123456789/abc';
+
+    it('только Telegram', () => {
+      const config = loadConfig({ ...base, TELEGRAM_ADMIN_ID: '7' });
+
+      expect(config.telegram).toMatchObject({ chatId: '-1002241331974', adminId: 7 });
+      expect(config.discord).toBeUndefined();
+    });
+
+    it('только Discord', () => {
+      const config = loadConfig({ ...twitch, DISCORD_WEBHOOK_URL: hook });
+
+      expect(config.telegram).toBeUndefined();
+      expect(config.discord).toEqual({ webhookUrl: hook });
+    });
+
+    it('обе площадки', () => {
+      const config = loadConfig({ ...base, DISCORD_WEBHOOK_URL: hook });
+
+      expect(config.telegram).toBeDefined();
+      expect(config.discord).toBeDefined();
+    });
+
+    it('ни одной — ошибка с понятным текстом', () => {
+      expect(() => loadConfig(twitch)).toThrow(ConfigError);
+      expect(() => loadConfig(twitch)).toThrow(/Не настроена ни одна площадка доставки/);
+    });
+
+    it('TELEGRAM_TOPIC_ID и TELEGRAM_ADMIN_ID без Telegram игнорируются, даже некорректные', () => {
+      const config = loadConfig({
+        ...twitch,
+        DISCORD_WEBHOOK_URL: hook,
+        TELEGRAM_TOPIC_ID: '5',
+        TELEGRAM_ADMIN_ID: 'не число',
+      });
+
+      expect(config.telegram).toBeUndefined();
+    });
   });
 
   it('ругается на половину параметров Twitch', () => {
@@ -57,7 +100,7 @@ describe('loadConfig', () => {
       ANNOUNCE_END: 'false',
     });
 
-    expect(config.telegram.topicId).toBe(42);
+    expect(config.telegram?.topicId).toBe(42);
     expect(config.pollIntervalMs).toBe(30_000);
     expect(config.dryRun).toBe(true);
     expect(config.announceEnd).toBe(false);

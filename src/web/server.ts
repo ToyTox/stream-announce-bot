@@ -179,7 +179,8 @@ export function createPanel(deps: PanelDeps): Panel {
       running: true,
       configError: null,
       dryRun: bot.config.dryRun,
-      adminSet: bot.config.telegram.adminId !== undefined,
+      telegramSet: bot.telegram !== undefined,
+      adminSet: bot.config.telegram?.adminId !== undefined,
       discordSet: bot.config.discord !== undefined,
       broadcast: broadcast && {
         ...broadcast,
@@ -192,7 +193,7 @@ export function createPanel(deps: PanelDeps): Panel {
         return [{ platform, label: PLATFORM_LABELS[platform], url, state: state?.state ?? 'pending', error: state?.error, checkedAt: state?.checkedAt ?? null }];
       }),
       text: bot.store.announceText(),
-      hasImage: bot.store.announcePhoto() !== null,
+      hasImage: bot.image.has(),
     };
   }
 
@@ -218,18 +219,32 @@ export function createPanel(deps: PanelDeps): Panel {
 
       case 'POST /api/test-message': {
         const bot = needBot();
-        try {
-          await bot.telegram.sendMessage(t(lang, 'server.testMessage'));
-        } catch (error) {
-          throw new HttpError(502, errorText(error));
-        }
-        return sendJson(res, 200, { ok: true });
+        const text = t(lang, 'server.testMessage');
+        const targets = [
+          ...(bot.telegram ? [{ channel: 'telegram', label: 'Telegram', send: () => bot.telegram!.sendMessage(text) }] : []),
+          ...(bot.discord
+            ? [{ channel: 'discord', label: 'Discord', send: () => bot.discord!.send({ embeds: [{ description: text }] }) }]
+            : []),
+        ];
+        // Площадки независимы: сбой одной не скрывает успех другой.
+        const results = await Promise.all(
+          targets.map(async ({ channel, label, send }) => {
+            try {
+              await send();
+              return { channel, label, ok: true };
+            } catch (error) {
+              return { channel, label, ok: false, error: errorText(error) };
+            }
+          })
+        );
+        return sendJson(res, 200, { ok: results.every((result) => result.ok), results });
       }
 
       case 'POST /api/test-announce/telegram':
       case 'POST /api/test-announce/discord': {
         const bot = needBot();
         const channel = url.pathname.endsWith('/discord') ? 'discord' : 'telegram';
+        if (channel === 'telegram' && !bot.telegram) throw HttpError.localized(400, 'server.telegramNotConfigured');
         if (channel === 'discord' && !bot.config.discord) throw HttpError.localized(400, 'server.discordNotConfigured');
         try {
           await bot.announcer.testAnnounce(channel);
@@ -257,14 +272,18 @@ export function createPanel(deps: PanelDeps): Panel {
 
       case 'PUT /api/image': {
         const bot = needBot();
-        const adminId = bot.config.telegram.adminId;
-        if (adminId === undefined) {
-          throw HttpError.localized(400, 'server.adminRequired');
-        }
         const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim();
         if (!IMAGE_TYPES.has(type)) throw HttpError.localized(415, 'server.imageTypes');
 
         const data = await readBody(req, IMAGE_LIMIT);
+
+        // Загрузка в личку нужна, только чтобы получить file_id; без Telegram или админа картинка живёт локально.
+        const adminId = bot.config.telegram?.adminId;
+        if (!bot.telegram || adminId === undefined) {
+          bot.image.setLocal({ data, type });
+          return sendJson(res, 200, { ok: true });
+        }
+
         let fileId: string | undefined;
         try {
           const message = await bot.telegram.uploadPhoto(adminId, data, type, t(lang, 'server.imageCaption'));
@@ -285,7 +304,7 @@ export function createPanel(deps: PanelDeps): Panel {
       case 'GET /api/image/file': {
         const bot = needBot();
         if (!bot.store.announcePhoto()) throw HttpError.localized(404, 'server.noImage');
-        // Копия на диске; если её нет, load() один раз скачает файл из Telegram.
+        // Копия на диске; если её нет, load() один раз скачает файл из Telegram (без Telegram — null).
         let image: Awaited<ReturnType<typeof bot.image.load>>;
         try {
           image = await bot.image.load();
@@ -306,7 +325,7 @@ export function createPanel(deps: PanelDeps): Panel {
         const bot = needBot();
         return sendJson(res, 200, {
           ...bot.announcer.preview(),
-          photo: bot.store.announcePhoto() ? 'custom' : 'twitch',
+          photo: bot.image.has() ? 'custom' : 'twitch',
         });
       }
 

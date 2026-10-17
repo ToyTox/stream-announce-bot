@@ -19,7 +19,8 @@ export interface Bot {
   store: Store;
   /** Своя картинка анонса: file_id в базе и локальная копия рядом с ней. */
   image: AnnounceImage;
-  telegram: TelegramClient;
+  /** Есть только при включённом Telegram (заданы TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID). */
+  telegram?: TelegramClient;
   /** Есть только при заданном DISCORD_WEBHOOK_URL. */
   discord?: DiscordClient;
   announcer: Announcer;
@@ -40,11 +41,9 @@ function buildWatchers(config: Config): BaseWatcher[] {
 export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => void): Bot {
   const db = openDb(config.databasePath);
   const store = new Store(db);
-  const telegram = new TelegramClient(
-    config.telegram.botToken,
-    config.telegram.chatId,
-    config.telegram.topicId
-  );
+  const telegram = config.telegram
+    ? new TelegramClient(config.telegram.botToken, config.telegram.chatId, config.telegram.topicId)
+    : undefined;
   const image = new AnnounceImage(dirname(config.databasePath), store, telegram);
   const discord = config.discord ? new DiscordClient(config.discord.webhookUrl) : undefined;
   const watchers = buildWatchers(config);
@@ -53,7 +52,7 @@ export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => vo
   console.log(
     `👀 Слежу за площадками: ${watchers.map((watcher) => PLATFORM_LABELS[watcher.platform]).join(', ')}`
   );
-  console.log(`📣 Площадки доставки: ${['Telegram', ...(discord ? ['Discord'] : [])].join(', ')}`);
+  console.log(`📣 Площадки доставки: ${[...(telegram ? ['Telegram'] : []), ...(discord ? ['Discord'] : [])].join(', ')}`);
   console.log(
     `⏱️  Опрос раз в ${Math.round(config.pollIntervalMs / 1000)} с, ` +
       `пауза перед анонсом ${Math.round(config.announceGraceMs / 1000)} с, ` +
@@ -62,20 +61,23 @@ export function startBot(config: Config, onEvent?: (event: AnnouncerEvent) => vo
   if (config.dryRun) console.log('🧪 DRY_RUN: сообщения в площадки доставки не уходят');
 
   let listener: CommandListener | undefined;
-  if (config.telegram.adminId !== undefined) {
+  const adminId = config.telegram?.adminId;
+  if (telegram && adminId !== undefined) {
     listener = new CommandListener({
       telegram,
       store,
       image,
       announcer,
-      adminId: config.telegram.adminId,
+      adminId,
       // Язык меняется из панели без перезапуска бота, поэтому читается при каждом ответе.
       language: () => config.language,
     });
     listener.start();
     console.log('💬 Команды бота принимаются');
-  } else {
+  } else if (telegram) {
     console.log('💬 TELEGRAM_ADMIN_ID не задан — команды бота выключены');
+  } else {
+    console.log('💬 Telegram выключен — команд бота нет, управление через панель');
   }
 
   // Защита от наложения: тик может идти дольше интервала, если площадки тормозят.

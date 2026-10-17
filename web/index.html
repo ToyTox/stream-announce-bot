@@ -182,6 +182,7 @@
     <div class="card">
       <h2 data-i18n="ui.platforms.title"></h2>
       <div id="platforms" class="platforms"></div>
+      <div id="delivery" class="muted small" style="margin-top: 10px"></div>
       <div class="row" style="margin-top: 14px">
         <button class="btn" id="probe" data-i18n="ui.probe"></button>
         <button class="btn" id="test-message" data-i18n="ui.testMessage"></button>
@@ -197,7 +198,7 @@
       <div>
         <div class="card">
           <h2 data-i18n="ui.text.title"></h2>
-          <p class="muted small" style="margin-top: -6px" data-i18n="ui.text.note"></p>
+          <p class="muted small" style="margin-top: -6px" id="text-note"></p>
           <textarea id="text" data-i18n-placeholder="ui.text.placeholder"></textarea>
           <div class="row" style="margin-top: 10px">
             <button class="btn primary" id="text-save" data-i18n="ui.save"></button>
@@ -217,7 +218,7 @@
             <button class="btn" id="image-clear" data-i18n="ui.reset"></button>
             <span id="image-result" class="result"></span>
           </div>
-          <p class="muted small" style="margin-bottom: 0" data-i18n="ui.image.note"></p>
+          <p class="muted small" style="margin-bottom: 0" id="image-note"></p>
         </div>
       </div>
       <div class="card">
@@ -393,7 +394,14 @@
 
   function renderStatus(status) {
     lastStatus = status;
+    $('test-announce-telegram').hidden = !status.telegramSet;
     $('test-announce-discord').hidden = !status.discordSet;
+    // Команды бота есть только при Telegram и заданном user ID; загрузка через личку — по той же причине.
+    const viaTelegram = Boolean(status.telegramSet && status.adminSet);
+    $('text-note').textContent = t(viaTelegram ? 'ui.text.note' : 'ui.text.noteNoCommands');
+    $('image-note').textContent = t(viaTelegram ? 'ui.image.note' : 'ui.image.noteLocal');
+    const channels = [status.telegramSet ? 'Telegram' : null, status.discordSet ? 'Discord' : null].filter(Boolean);
+    $('delivery').textContent = status.running ? t('ui.deliveryChannels', { channels: channels.join(', ') }) : '';
     if (status.version) $('version').textContent = `v${status.version}`;
     const pill = $('bot-pill');
     const banner = $('config-banner');
@@ -485,8 +493,10 @@
   }));
   $('test-message').addEventListener('click', (e) => withButton(e.currentTarget, async () => {
     try {
-      await api('POST', '/api/test-message', {});
-      showResult($('status-result'), true, t('ui.testSent'));
+      const { results } = await api('POST', '/api/test-message', {});
+      // Результат по каждой площадке: сбой одной не скрывает успех другой.
+      const lines = results.map((r) => t(r.ok ? 'ui.testResult.ok' : 'ui.testResult.fail', { label: r.label, error: r.error ?? '' }));
+      showResult($('status-result'), results.every((r) => r.ok), lines.join('; '));
     } catch (error) {
       showResult($('status-result'), false, error.message);
     }

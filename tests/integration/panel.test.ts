@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Bot } from '../../src/bot.js';
 import type { Env } from '../../src/config.js';
+import type { DiscordClient } from '../../src/discord/client.js';
 import type { TelegramClient } from '../../src/telegram/client.js';
 import { createPanel, type Panel, type PanelRuntime } from '../../src/web/server.js';
 import { createHarness, liveStream, testConfig, type Harness } from '../helpers/announcerHarness.js';
@@ -68,10 +69,14 @@ function rawGet(path: string): Promise<{ status: number; type: string; body: Buf
   });
 }
 
-function startPanel(configOverrides: Parameters<typeof testConfig>[0] = {}, discord = false): Promise<void> {
-  harness = createHarness(configOverrides, undefined, { discord });
+function startPanel(
+  configOverrides: Parameters<typeof testConfig>[0] = {},
+  discord = false,
+  telegram = true
+): Promise<void> {
+  harness = createHarness(configOverrides, undefined, { discord, telegram });
   const config = testConfig({
-    telegram: { botToken: 'token', chatId: '-100123', adminId: ADMIN },
+    telegram: telegram ? { botToken: 'token', chatId: '-100123', adminId: ADMIN } : undefined,
     twitch: { login: 'me', clientId: 'id', clientSecret: 'secret' },
     vkvideo: { channel: 'me' },
     ...configOverrides,
@@ -80,7 +85,8 @@ function startPanel(configOverrides: Parameters<typeof testConfig>[0] = {}, disc
     config,
     store: harness.store,
     image: harness.image,
-    telegram: harness.telegram as unknown as TelegramClient,
+    telegram: telegram ? (harness.telegram as unknown as TelegramClient) : undefined,
+    discord: discord ? (harness.discord as unknown as DiscordClient) : undefined,
     announcer: harness.announcer,
     tickNow: () => harness.announcer.tick(),
     stop: async () => {},
@@ -201,7 +207,7 @@ describe('панель: статус и сообщение', () => {
     expect((await call('GET', '/api/image/file')).status).toBe(404);
   });
 
-  it('без TELEGRAM_ADMIN_ID картинку загрузить нельзя', async () => {
+  it('без TELEGRAM_ADMIN_ID картинка сохраняется локально, в личку не уходит', async () => {
     await panel.close();
     harness.cleanup();
     await startPanel({ telegram: { botToken: 'token', chatId: '-100123' } });
@@ -211,8 +217,11 @@ describe('панель: статус и сообщение', () => {
       headers: { 'content-type': 'image/jpeg' },
     });
 
-    expect(reply.status).toBe(400);
+    expect(reply.status).toBe(200);
     expect(harness.telegram.uploadPhoto).not.toHaveBeenCalled();
+    expect(harness.image.telegramFileId()).toBeNull();
+    expect((await rawGet('/api/image/file')).body).toEqual(Buffer.from([1]));
+    expect((await call('GET', '/api/status')).json).toMatchObject({ hasImage: true, adminSet: false, telegramSet: true });
   });
 });
 
@@ -406,13 +415,48 @@ describe('панель: язык', () => {
     expect(missing.json.error).toBe('Not found');
     expect(noImage.json.error).toBe('No custom preview set');
     expect(settings.json.fields.find((f: any) => f.key === 'TELEGRAM_BOT_TOKEN').label).toBe('Bot token');
-    expect(invalid.json.error).toContain('Variable TELEGRAM_CHAT_ID is not set');
+    expect(invalid.json.error).toContain('Telegram needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID');
   });
 
   it('тестовое сообщение уходит на языке панели', async () => {
     await call('POST', '/api/test-message', { body: {}, headers: { 'accept-language': 'en' } });
 
     expect(harness.telegram.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Connection check'));
+  });
+
+  it('проверка связи шлёт тест в каждую площадку и возвращает результат по каждой', async () => {
+    await panel.close();
+    harness.cleanup();
+    await startPanel({ discord: { webhookUrl: 'https://discord.com/api/webhooks/1/x' } }, true);
+
+    const ok = await call('POST', '/api/test-message', { body: {} });
+
+    expect(ok.status).toBe(200);
+    expect(ok.json).toMatchObject({
+      ok: true,
+      results: [
+        { channel: 'telegram', ok: true },
+        { channel: 'discord', ok: true },
+      ],
+    });
+    expect(harness.discord.send.mock.calls[0]?.[0].embeds?.[0]?.description).toContain('Проверка связи');
+  });
+
+  it('проверка связи: сбой Discord не скрывает успех Telegram', async () => {
+    await panel.close();
+    harness.cleanup();
+    await startPanel({ discord: { webhookUrl: 'https://discord.com/api/webhooks/1/x' } }, true);
+    harness.discord.send.mockRejectedValueOnce(new Error('Discord недоступен'));
+
+    const reply = await call('POST', '/api/test-message', { body: {} });
+
+    expect(reply.status).toBe(200);
+    expect(reply.json.ok).toBe(false);
+    expect(reply.json.results).toEqual([
+      { channel: 'telegram', label: 'Telegram', ok: true },
+      { channel: 'discord', label: 'Discord', ok: false, error: 'Discord недоступен' },
+    ]);
+    expect(harness.telegram.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('статус сообщает, настроен ли Discord', async () => {
@@ -473,5 +517,102 @@ describe('панель: язык', () => {
 
     expect(preview.json.announce.startsWith('Hello everyone')).toBe(true);
     expect(preview.json.finished).toContain('Stream ended, it lasted 2 h 47 min');
+  });
+});
+
+describe('панель без Telegram', () => {
+  const discordOnly = { discord: { webhookUrl: 'https://discord.com/api/webhooks/1/x' } };
+
+  beforeEach(async () => {
+    await panel.close();
+    harness.cleanup();
+    await startPanel(discordOnly, true, false);
+  });
+
+  it('статус показывает, что Telegram выключен, а Discord включён', async () => {
+    const reply = await call('GET', '/api/status');
+
+    expect(reply.status).toBe(200);
+    expect(reply.json).toMatchObject({ running: true, telegramSet: false, adminSet: false, discordSet: true });
+  });
+
+  it('проверка связи идёт только в Discord', async () => {
+    const reply = await call('POST', '/api/test-message', { body: {} });
+
+    expect(reply.json).toEqual({ ok: true, results: [{ channel: 'discord', label: 'Discord', ok: true }] });
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('проверка связи: сбой единственной площадки виден в результате', async () => {
+    harness.discord.send.mockRejectedValueOnce(new Error('Discord недоступен'));
+
+    const reply = await call('POST', '/api/test-message', { body: {} });
+
+    expect(reply.json.ok).toBe(false);
+    expect(reply.json.results[0]).toMatchObject({ channel: 'discord', ok: false, error: 'Discord недоступен' });
+  });
+
+  it('тестовый анонс в Telegram отклоняется понятным сообщением', async () => {
+    const reply = await call('POST', '/api/test-announce/telegram', { body: {}, headers: { 'accept-language': 'en' } });
+
+    expect(reply.status).toBe(400);
+    expect(reply.json.error).toBe('Telegram is not configured: set the bot token and group ID in settings');
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('картинка загружается, отдаётся и сбрасывается без Telegram', async () => {
+    const put = await call('PUT', '/api/image', {
+      raw: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      headers: { 'content-type': 'image/png' },
+    });
+
+    expect(put.status).toBe(200);
+    expect(harness.telegram.uploadPhoto).not.toHaveBeenCalled();
+    const file = await rawGet('/api/image/file');
+    expect(file.type).toBe('image/png');
+    expect(file.body).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    expect((await call('GET', '/api/preview')).json.photo).toBe('custom');
+    expect((await call('GET', '/api/status')).json.hasImage).toBe(true);
+
+    await call('DELETE', '/api/image');
+
+    expect(existsSync(join(harness.dataDir, 'announce-image.bin'))).toBe(false);
+    expect((await call('GET', '/api/image/file')).status).toBe(404);
+    expect((await call('GET', '/api/preview')).json.photo).toBe('twitch');
+  });
+
+  it('тип и размер файла проверяются так же', async () => {
+    const reply = await call('PUT', '/api/image', { raw: Buffer.from([1]), headers: { 'content-type': 'image/gif' } });
+
+    expect(reply.status).toBe(415);
+  });
+
+  it('старая картинка Telegram без копии: ответ 404, а не 502, к Telegram не обращаемся', async () => {
+    harness.store.setAnnouncePhoto('old-file-id');
+
+    const file = await call('GET', '/api/image/file');
+
+    expect(file.status).toBe(404);
+    expect(harness.telegram.downloadFile).not.toHaveBeenCalled();
+    expect((await call('GET', '/api/preview')).json.photo).toBe('twitch');
+  });
+
+  it('старая картинка Telegram с копией на диске отдаётся из копии', async () => {
+    harness.image.set('old-file-id', { data: new Uint8Array([7, 7]), type: 'image/jpeg' });
+
+    const file = await rawGet('/api/image/file');
+
+    expect(file.body).toEqual(Buffer.from([7, 7]));
+    expect(harness.telegram.downloadFile).not.toHaveBeenCalled();
+  });
+
+  it('врезка и предпросмотр работают', async () => {
+    await call('PUT', '/api/text', { body: { text: 'Сегодня финал' } });
+
+    const preview = await call('GET', '/api/preview');
+
+    expect(preview.status).toBe(200);
+    expect(preview.json.announce).toContain('Сегодня финал');
+    expect(preview.json.finished).toContain('Эфир завершён');
   });
 });
