@@ -34,10 +34,11 @@ export type AnnouncerEvent =
 export interface AnnouncerDeps {
   store: Store;
   watchers: BaseWatcher[];
-  telegram: TelegramClient;
+  /** Есть только при включённом Telegram. */
+  telegram?: TelegramClient;
   /** Есть только при заданном DISCORD_WEBHOOK_URL. */
   discord?: DiscordClient;
-  /** Локальная копия своей картинки: из неё Discord получает файл. */
+  /** Своя картинка: Discord получает её файлом, Telegram — по file_id или файлом. */
   image: AnnounceImage;
   config: Config;
   /** Подменяется в тестах, чтобы гонять grace-периоды без ожидания. */
@@ -66,7 +67,7 @@ export interface BroadcastStatus {
 /** Что нужно площадке, чтобы собрать анонс: Telegram и Discord берут картинку по-разному. */
 interface AnnounceRequest {
   input: AnnounceInput;
-  /** Своя картинка из /image: file_id существует только внутри Telegram. */
+  /** Своя картинка из /image или панели: метка в базе (file_id Telegram или локальная). */
   customPhoto: string | null;
   /** Превью приоритетной площадки — обычный URL, годится всем. */
   thumbnailUrl?: string | null;
@@ -123,7 +124,8 @@ class TelegramChannel implements DeliveryChannel {
 
   constructor(
     private readonly client: TelegramClient,
-    private readonly chatId: string
+    private readonly chatId: string,
+    private readonly image: AnnounceImage
   ) {}
 
   isPermanent(error: unknown): boolean {
@@ -132,15 +134,12 @@ class TelegramChannel implements DeliveryChannel {
 
   prepareAnnounce({ input, customPhoto, thumbnailUrl, silent }: AnnounceRequest): Prepared<Sent> {
     const text = renderAnnounce(input);
-    // Своя картинка из лички важнее превью Twitch; живёт, пока её не сбросят через /image -.
-    const photo = customPhoto ?? thumbnailUrl;
+    // Своя картинка важнее превью Twitch; живёт, пока её не сбросят через /image - или в панели.
     const options = silent ? { silent } : undefined;
     return {
       text,
       send: async () => {
-        const message = photo
-          ? await this.sendWithPhotoFallback(photo, text, options)
-          : await this.client.sendMessage(text, options);
+        const message = await this.sendAnnounce(customPhoto, thumbnailUrl, text, options);
         return { messageId: String(message.message_id), target: this.chatId };
       },
     };
@@ -154,6 +153,34 @@ class TelegramChannel implements DeliveryChannel {
         await this.client.sendMessage(text);
       },
     };
+  }
+
+  private async sendAnnounce(
+    customPhoto: string | null,
+    thumbnailUrl: string | null | undefined,
+    text: string,
+    options?: SendOptions
+  ) {
+    if (customPhoto) {
+      const fileId = this.image.telegramFileId();
+      if (fileId) return this.sendWithPhotoFallback(fileId, text, options);
+      // Картинка только на диске: отправляем файл. Нет копии — как будто своей картинки нет.
+      const stored = this.image.read();
+      if (stored) {
+        try {
+          return await this.client.sendPhotoFile(stored.data, stored.type, text, options);
+        } catch (error) {
+          if (error instanceof TelegramError && error.code === 'upstream') {
+            console.warn('⚠️  Картинка не ушла, отправляю текстом:', error.message);
+            return this.client.sendMessage(text, options);
+          }
+          throw error;
+        }
+      }
+    }
+    return thumbnailUrl
+      ? this.sendWithPhotoFallback(thumbnailUrl, text, options)
+      : this.client.sendMessage(text, options);
   }
 
   /** Превью может не подгрузиться на стороне Telegram — тогда шлём текстом. */
@@ -211,7 +238,8 @@ class DiscordChannel implements DeliveryChannel {
       // Свою картинку на превью Twitch не подменяем: покажет не то, что выбрал стример.
       try {
         const stored = await this.image.load();
-        return stored ? toDiscordFile('announce', stored.type, stored.data) : undefined;
+        // Картинки нет совсем (нет копии и Telegram): молча берём превью площадки.
+        if (stored) return toDiscordFile('announce', stored.type, stored.data);
       } catch (error) {
         console.warn('⚠️  Своя картинка недоступна, Discord получит анонс без картинки:', describe(error));
         return undefined;
@@ -292,7 +320,10 @@ export class Announcer {
   constructor(deps: AnnouncerDeps) {
     this.store = deps.store;
     this.watchers = deps.watchers;
-    this.channels = [new TelegramChannel(deps.telegram, deps.config.telegram.chatId)];
+    this.channels = [];
+    if (deps.telegram && deps.config.telegram) {
+      this.channels.push(new TelegramChannel(deps.telegram, deps.config.telegram.chatId, deps.image));
+    }
     if (deps.discord) this.channels.push(new DiscordChannel(deps.discord, deps.image));
     this.config = deps.config;
     this.now = deps.now ?? (() => Date.now());

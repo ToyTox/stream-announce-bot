@@ -24,13 +24,16 @@ export interface DiscordConfig {
   webhookUrl: string;
 }
 
+export interface TelegramConfig {
+  botToken: string;
+  chatId: string;
+  topicId?: number;
+  adminId?: number;
+}
+
 export interface Config {
-  telegram: {
-    botToken: string;
-    chatId: string;
-    topicId?: number;
-    adminId?: number;
-  };
+  /** Необязательная площадка доставки: без неё анонсы идут только в Discord, команд бота нет. */
+  telegram?: TelegramConfig;
   /** Необязательная вторая площадка доставки: анонсы дублируются в канал Discord. */
   discord?: DiscordConfig;
   twitch?: TwitchConfig;
@@ -76,14 +79,6 @@ function str(env: Env, name: string): string | undefined {
   return value ? value : undefined;
 }
 
-function required(env: Env, name: string): string {
-  const value = str(env, name);
-  if (!value) {
-    throw new ConfigError('config.required', { name });
-  }
-  return value;
-}
-
 function int(env: Env, name: string, fallback: number): number {
   const raw = str(env, name);
   if (raw === undefined) return fallback;
@@ -124,6 +119,25 @@ function twitchConfig(env: Env): TwitchConfig | undefined {
     throw new ConfigError('config.twitch');
   }
   return { login, clientId, clientSecret };
+}
+
+/**
+ * Telegram включён, когда заданы и токен, и чат. Одно из двух — опечатка, а не выбор.
+ * TELEGRAM_TOPIC_ID и TELEGRAM_ADMIN_ID без включённого Telegram игнорируются (не читаются).
+ */
+function telegramConfig(env: Env): TelegramConfig | undefined {
+  const botToken = str(env, 'TELEGRAM_BOT_TOKEN');
+  const chatId = str(env, 'TELEGRAM_CHAT_ID');
+  if (!botToken && !chatId) return undefined;
+  if (!botToken || !chatId) {
+    throw new ConfigError('config.telegram');
+  }
+  return {
+    botToken,
+    chatId,
+    topicId: optionalInt(env, 'TELEGRAM_TOPIC_ID'),
+    adminId: optionalInt(env, 'TELEGRAM_ADMIN_ID'),
+  };
 }
 
 function youtubeConfig(env: Env): YouTubeConfig | undefined {
@@ -178,12 +192,7 @@ export function loadConfig(env: Env = process.env): Config {
   }
 
   const config: Config = {
-    telegram: {
-      botToken: required(env, 'TELEGRAM_BOT_TOKEN'),
-      chatId: required(env, 'TELEGRAM_CHAT_ID'),
-      topicId: optionalInt(env, 'TELEGRAM_TOPIC_ID'),
-      adminId: optionalInt(env, 'TELEGRAM_ADMIN_ID'),
-    },
+    telegram: telegramConfig(env),
     discord: discordConfig(env),
     twitch: twitchConfig(env),
     youtube: youtubeConfig(env),
@@ -200,6 +209,9 @@ export function loadConfig(env: Env = process.env): Config {
     announceLanguage: announceLanguageFromEnv(env),
   };
 
+  if (!config.telegram && !config.discord) {
+    throw new ConfigError('config.noDelivery');
+  }
   if (!config.twitch && !config.youtube && !config.vkvideo) {
     throw new ConfigError('config.noPlatform');
   }

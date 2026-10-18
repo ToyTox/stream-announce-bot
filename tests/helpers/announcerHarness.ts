@@ -62,6 +62,10 @@ export function fakeTelegram() {
   // Сигнатуры с аргументами нужны, чтобы mock.calls были типизированы в тестах.
   return {
     sendMessage: vi.fn(async (_text: string, _options?: SendOptions) => ({ message_id: 100, chat: { id: '-100123' } })),
+    sendPhotoFile: vi.fn(async (_data: Uint8Array, _type: string, _caption: string, _options?: SendOptions) => ({
+      message_id: 100,
+      chat: { id: '-100123' },
+    })),
     sendPhoto: vi.fn(async (_photoUrl: string, _caption: string, _options?: SendOptions) => ({
       message_id: 100,
       chat: { id: '-100123' },
@@ -132,8 +136,10 @@ export interface Harness {
 export function createHarness(
   configOverrides: Partial<Config> = {},
   onEvent?: (event: AnnouncerEvent) => void,
-  options: { discord?: boolean } = {}
+  options: { discord?: boolean; telegram?: boolean } = {}
 ): Harness {
+  // Режим «только Discord»: ни клиента Telegram, ни его настроек.
+  const withTelegram = options.telegram ?? true;
   const dir = mkdtempSync(join(tmpdir(), 'stream-bot-'));
   const dbPath = join(dir, 'test.db');
   const db = openDb(dbPath);
@@ -141,9 +147,9 @@ export function createHarness(
   const clock = new Clock();
   const telegram = fakeTelegram();
   const dataDir = join(dir, 'data');
-  const image = new AnnounceImage(dataDir, store, telegram as unknown as TelegramClient);
+  const image = new AnnounceImage(dataDir, store, withTelegram ? (telegram as unknown as TelegramClient) : undefined);
   const discord = fakeDiscord();
-  const config = testConfig(configOverrides);
+  const config = testConfig({ ...(withTelegram ? {} : { telegram: undefined }), ...configOverrides });
 
   const watchers: Record<Platform, FakeWatcher> = {
     twitch: new FakeWatcher('twitch'),
@@ -156,7 +162,7 @@ export function createHarness(
     new Announcer({
       store,
       watchers: list,
-      telegram: telegram as unknown as TelegramClient,
+      telegram: withTelegram ? (telegram as unknown as TelegramClient) : undefined,
       discord: withDiscord ? (discord as unknown as DiscordClient) : undefined,
       image,
       config,

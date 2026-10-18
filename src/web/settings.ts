@@ -82,13 +82,13 @@ const steps = (group: string, count: number): string[] =>
 export const SETTING_GUIDES: GroupGuide[] = [
   {
     group: 'telegram',
-    steps: steps('telegram', 5),
+    steps: steps('telegram', 6),
     links: [
       { label: '@BotFather', url: 'https://t.me/BotFather' },
       { label: '@userinfobot', url: 'https://t.me/userinfobot' },
     ],
   },
-  { group: 'discord', steps: steps('discord', 4) },
+  { group: 'discord', steps: steps('discord', 5) },
   {
     group: 'twitch',
     steps: steps('twitch', 3),

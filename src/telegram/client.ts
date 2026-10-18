@@ -125,6 +125,30 @@ export class TelegramClient {
     });
   }
 
+  /** Фото файлом: для своей картинки, у которой нет file_id (загружена из панели без лички админа). */
+  async sendPhotoFile(
+    data: Uint8Array,
+    contentType: string,
+    caption: string,
+    options?: SendOptions
+  ): Promise<TelegramMessage> {
+    const form = new FormData();
+    form.append('chat_id', this.chatId);
+    form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+    const threadId = options?.messageThreadId ?? this.topicId;
+    if (threadId !== undefined) form.append('message_thread_id', String(threadId));
+    if (options?.silent) form.append('disable_notification', 'true');
+    // Копия в обычный ArrayBuffer: Blob не принимает представления над SharedArrayBuffer.
+    form.append('photo', new Blob([new Uint8Array(data)], { type: contentType }), 'announce');
+    try {
+      const response = await this.http.post<{ ok: boolean; result: TelegramMessage }>('sendPhoto', form);
+      return response.data.result;
+    } catch (error) {
+      throw toTelegramError(error, 'sendPhoto');
+    }
+  }
+
   async editMessageCaption(messageId: number, caption: string): Promise<void> {
     await this.call('editMessageCaption', {
       chat_id: this.chatId,

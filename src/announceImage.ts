@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from './store.js';
@@ -6,7 +7,8 @@ import type { Store } from './store.js';
  * Локальная копия своей картинки анонса. file_id живёт в базе (Store), а байты —
  * файлом рядом с ней: Discord не читает file_id Telegram, и ходить за картинкой
  * в Telegram на каждый анонс незачем. Тип хранится вместе с байтами: из панели
- * приходит png/webp, а Telegram отдаёт jpeg.
+ * приходит png/webp, а Telegram отдаёт jpeg. Без Telegram (или без админа) картинка
+ * из панели существует только как локальный файл: вместо file_id в базе лежит метка LOCAL_PREFIX.
  */
 
 export interface StoredImage {
@@ -28,6 +30,8 @@ const DATA_FILE = 'announce-image.bin';
 const META_FILE = 'announce-image.json';
 /** Фото Telegram всегда пережимает в JPEG. */
 const TELEGRAM_TYPE = 'image/jpeg';
+/** Метка в базе вместо file_id: картинка есть только на диске. */
+const LOCAL_PREFIX = 'local:';
 
 export class AnnounceImage {
   private readonly dataPath: string;
@@ -38,7 +42,8 @@ export class AnnounceImage {
   constructor(
     private readonly dir: string,
     private readonly store: Store,
-    private readonly telegram: FileDownloader
+    /** Нет, если Telegram выключен: докачать по file_id тогда неоткуда. */
+    private readonly telegram?: FileDownloader
   ) {
     this.dataPath = join(dir, DATA_FILE);
     this.metaPath = join(dir, META_FILE);
@@ -49,6 +54,26 @@ export class AnnounceImage {
     this.store.setAnnouncePhoto(fileId);
     this.removeFiles();
     if (copy) this.write(fileId, copy);
+  }
+
+  /** Картинка только в виде локального файла: Telegram получит её файлом, Discord — тоже. */
+  setLocal(copy: StoredImage): void {
+    const id = `${LOCAL_PREFIX}${randomUUID()}`;
+    this.store.setAnnouncePhoto(id);
+    this.removeFiles();
+    this.write(id, copy);
+  }
+
+  /** file_id для Telegram; null — картинки нет или она только локальная. */
+  telegramFileId(): string | null {
+    const id = this.store.announcePhoto();
+    return id && !id.startsWith(LOCAL_PREFIX) ? id : null;
+  }
+
+  /** Есть ли картинка, которую можно отправить: локальная копия или file_id при живом Telegram. */
+  has(): boolean {
+    if (!this.store.announcePhoto()) return false;
+    return (this.telegram !== undefined && this.telegramFileId() !== null) || this.read() !== null;
   }
 
   clear(): void {
@@ -71,16 +96,18 @@ export class AnnounceImage {
 
   /**
    * Копия на диске, а если её нет — один раз скачивается из Telegram и сохраняется.
-   * null — своей картинки нет; ошибка скачивания пробрасывается.
+   * null — своей картинки нет или взять её неоткуда (нет копии и Telegram); ошибка скачивания пробрасывается.
    */
   async load(): Promise<StoredImage | null> {
     const fileId = this.store.announcePhoto();
     if (!fileId) return null;
     const stored = this.read();
     if (stored) return stored;
+    if (!this.telegram || this.telegramFileId() === null) return null;
+    const telegram = this.telegram;
 
     if (this.downloading?.fileId !== fileId) {
-      const promise = this.download(fileId).finally(() => {
+      const promise = this.download(telegram, fileId).finally(() => {
         if (this.downloading?.promise === promise) this.downloading = null;
       });
       this.downloading = { fileId, promise };
@@ -88,8 +115,8 @@ export class AnnounceImage {
     return this.downloading.promise;
   }
 
-  private async download(fileId: string): Promise<StoredImage> {
-    const image = { data: await this.telegram.downloadFile(fileId), type: TELEGRAM_TYPE };
+  private async download(telegram: FileDownloader, fileId: string): Promise<StoredImage> {
+    const image = { data: await telegram.downloadFile(fileId), type: TELEGRAM_TYPE };
     // За время скачивания картинку могли заменить или сбросить: чужую копию не пишем.
     if (this.store.announcePhoto() === fileId) this.write(fileId, image);
     return image;
