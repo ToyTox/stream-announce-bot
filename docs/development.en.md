@@ -137,6 +137,7 @@ The panel starts together with the bot — open **http://localhost:3210**. The l
 - The panel listens only on `127.0.0.1`: it is not reachable from the network or from a phone, and requests from other sites are rejected. There is no password — everything visible in the panel already lies in `.env` on this computer.
 - Saving the settings writes `.env` (comments are kept). At the start of each settings group there is a collapsed "How to get it" guide (works without internet), and a link to the README at the top.
 - The port is changed with `WEB_PORT`, the panel is turned off with `WEB_ENABLED=false`. In the desktop app the panel always works, and if the port is busy, a free one is taken.
+- There is a versioned `/api/v1` for external clients: `GET /api/v1/info` (API and app versions), `GET /api/v1/status` (bot status), `GET /api/v1/logs` (log, `after` parameter). For now it is reachable only from localhost, like the panel; the full contract description will appear in `docs/api-v1.yaml`.
 
 ## `.env` variables
 
