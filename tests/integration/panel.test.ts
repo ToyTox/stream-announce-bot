@@ -8,6 +8,7 @@ import type { Bot } from '../../src/bot.js';
 import type { Env } from '../../src/config.js';
 import type { DiscordClient } from '../../src/discord/client.js';
 import type { TelegramClient } from '../../src/telegram/client.js';
+import { pushLog } from '../../src/log.js';
 import { createPanel, type Panel, type PanelRuntime } from '../../src/web/server.js';
 import { createHarness, liveStream, testConfig, type Harness } from '../helpers/announcerHarness.js';
 
@@ -614,5 +615,65 @@ describe('панель без Telegram', () => {
     expect(preview.status).toBe(200);
     expect(preview.json.announce).toContain('Сегодня финал');
     expect(preview.json.finished).toContain('Эфир завершён');
+  });
+});
+
+describe('панель: /api/v1', () => {
+  it('info отдаёт версию API и версию приложения', async () => {
+    const reply = await call('GET', '/api/v1/info');
+
+    expect(reply.status).toBe(200);
+    expect(reply.json).toEqual({ apiVersion: 1, version: '1.2.3' });
+  });
+
+  it('status совпадает со статусом панели и не содержит секретов', async () => {
+    const v1 = await call('GET', '/api/v1/status');
+    const panelStatus = await call('GET', '/api/status');
+
+    expect(v1.status).toBe(200);
+    expect(v1.json).toEqual(panelStatus.json);
+    expect(v1.json).toMatchObject({ running: true, version: '1.2.3' });
+    expect(JSON.stringify(v1.json)).not.toContain('AAHkSECRET');
+  });
+
+  it('status при незапущенном боте отдаёт причину', async () => {
+    runtime.bot = null;
+    runtime.configError = 'нет токена';
+
+    const reply = await call('GET', '/api/v1/status');
+
+    expect(reply.status).toBe(200);
+    expect(reply.json).toEqual({ version: '1.2.3', running: false, configError: 'нет токена' });
+  });
+
+  it('logs отдаёт строки и учитывает after', async () => {
+    pushLog('info', 'v1-первая');
+    pushLog('warn', 'v1-вторая');
+
+    const all = await call('GET', '/api/v1/logs');
+    const first = all.json.lines.find((line: any) => line.text === 'v1-первая');
+    const after = await call('GET', `/api/v1/logs?after=${first.seq}`);
+
+    expect(all.status).toBe(200);
+    expect(after.json.lines.map((line: any) => line.text)).toEqual(['v1-вторая']);
+    expect(after.json).toEqual(await call('GET', `/api/logs?after=${first.seq}`).then((r) => r.json));
+  });
+
+  it('неизвестный путь и метод дают 404 с JSON-ошибкой на языке запроса', async () => {
+    const unknown = await call('GET', '/api/v1/nope');
+    const method = await call('POST', '/api/v1/status', { body: {} });
+    const en = await call('GET', '/api/v1/nope', { headers: { 'accept-language': 'en-US' } });
+
+    expect(unknown).toEqual({ status: 404, json: { error: 'Не найдено' } });
+    expect(method.status).toBe(404);
+    expect(en.json).toEqual({ error: 'Not found' });
+  });
+
+  it('чужой Host и Origin отклоняются, как и в панели', async () => {
+    const host = await call('GET', '/api/v1/status', { headers: { host: `evil.example:${port}` } });
+    const origin = await call('GET', '/api/v1/info', { headers: { origin: 'https://evil.example' } });
+
+    expect(host.status).toBe(403);
+    expect(origin.status).toBe(403);
   });
 });

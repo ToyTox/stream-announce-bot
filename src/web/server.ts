@@ -68,6 +68,8 @@ function findIndexHtml(): string {
 }
 
 const INDEX_HTML = findIndexHtml();
+/** Версия контракта /api/v1: растёт только при несовместимых изменениях. */
+const API_VERSION = 1;
 const JSON_LIMIT = 64 * 1024;
 /** Лимит Telegram на фото. */
 const IMAGE_LIMIT = 10 * 1024 * 1024;
@@ -210,7 +212,11 @@ export function createPanel(deps: PanelDeps): Panel {
         return;
       }
 
+      case 'GET /api/v1/info':
+        return sendJson(res, 200, { apiVersion: API_VERSION, version });
+
       case 'GET /api/status':
+      case 'GET /api/v1/status':
         return sendJson(res, 200, status(lang));
 
       case 'POST /api/probe':
@@ -406,7 +412,8 @@ export function createPanel(deps: PanelDeps): Panel {
         return sendJson(res, 200, { ok: true });
       }
 
-      case 'GET /api/logs': {
+      case 'GET /api/logs':
+      case 'GET /api/v1/logs': {
         const after = Number(url.searchParams.get('after') ?? 0) || 0;
         return sendJson(res, 200, { lines: recentLogs(after) });
       }
