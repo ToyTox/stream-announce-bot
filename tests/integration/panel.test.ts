@@ -659,6 +659,154 @@ describe('панель: /api/v1', () => {
     expect(after.json).toEqual(await call('GET', `/api/logs?after=${first.seq}`).then((r) => r.json));
   });
 
+  it('текст: GET, PUT и DELETE работают как в панели', async () => {
+    const put = await call('PUT', '/api/v1/text', { body: { text: 'Сегодня финал' } });
+    const get = await call('GET', '/api/v1/text');
+
+    expect(put).toEqual({ status: 200, json: { text: 'Сегодня финал' } });
+    expect(get).toEqual(await call('GET', '/api/text'));
+    expect(harness.store.announceText()).toBe('Сегодня финал');
+
+    const del = await call('DELETE', '/api/v1/text');
+
+    expect(del).toEqual({ status: 200, json: { text: null } });
+    expect(harness.store.announceText()).toBeNull();
+  });
+
+  it('предпросмотр совпадает с панельным и учитывает текст', async () => {
+    await call('PUT', '/api/v1/text', { body: { text: 'Сегодня финал' } });
+
+    const v1 = await call('GET', '/api/v1/preview');
+
+    expect(v1.status).toBe(200);
+    expect(v1.json).toEqual((await call('GET', '/api/preview')).json);
+    expect(v1.json.announce).toContain('Сегодня финал');
+    expect(v1.json.photo).toBe('twitch');
+  });
+
+  it('картинка: загрузка уходит в личку, файл отдаётся, удаление сбрасывает', async () => {
+    const put = await call('PUT', '/api/v1/image', {
+      raw: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      headers: { 'content-type': 'image/png' },
+    });
+
+    expect(put).toEqual({ status: 200, json: { ok: true } });
+    expect(harness.telegram.uploadPhoto.mock.calls[0]?.[0]).toBe(ADMIN);
+    const file = await rawGet('/api/v1/image/file');
+    const old = await rawGet('/api/image/file');
+    expect(file.type).toBe('image/png');
+    expect(file.body).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    expect(file).toEqual(old);
+    expect((await call('GET', '/api/v1/preview')).json.photo).toBe('custom');
+
+    const del = await call('DELETE', '/api/v1/image');
+
+    expect(del).toEqual({ status: 200, json: { ok: true } });
+    expect(harness.store.announcePhoto()).toBeNull();
+    expect((await call('GET', '/api/v1/image/file')).status).toBe(404);
+  });
+
+  it('картинка неверного типа отклоняется', async () => {
+    const reply = await call('PUT', '/api/v1/image', { raw: Buffer.from([1]), headers: { 'content-type': 'image/gif' } });
+    const old = await call('PUT', '/api/image', { raw: Buffer.from([1]), headers: { 'content-type': 'image/gif' } });
+
+    expect(reply.status).toBe(415);
+    expect(reply).toEqual(old);
+  });
+
+  it('probe запускает проверку и отдаёт статус как в панели', async () => {
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    const reply = await call('POST', '/api/v1/probe', { body: {} });
+
+    expect(reply.status).toBe(200);
+    expect(reply.json.platforms.find((p: any) => p.platform === 'twitch')).toMatchObject({ state: 'live' });
+    expect(reply.json).toEqual((await call('GET', '/api/status')).json);
+  });
+
+  it('test-message отправляет сообщение так же, как старый путь', async () => {
+    const v1 = await call('POST', '/api/v1/test-message', { body: {} });
+    const old = await call('POST', '/api/test-message', { body: {} });
+
+    expect(v1.status).toBe(200);
+    expect(v1.json).toEqual({ ok: true, results: [{ channel: 'telegram', label: 'Telegram', ok: true }] });
+    expect(v1).toEqual(old);
+    expect(harness.telegram.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('test-announce: Telegram работает, ненастроенный Discord даёт ту же ошибку', async () => {
+    const telegram = await call('POST', '/api/v1/test-announce/telegram', { body: {} });
+    const discord = await call('POST', '/api/v1/test-announce/discord', { body: {}, headers: { 'accept-language': 'en' } });
+    const old = await call('POST', '/api/test-announce/discord', { body: {}, headers: { 'accept-language': 'en' } });
+
+    expect(telegram).toEqual({ status: 200, json: { ok: true } });
+    expect(discord.status).toBe(400);
+    expect(discord).toEqual(old);
+  });
+
+  it('test-announce в Discord через v1 уходит в Discord, а не в Telegram', async () => {
+    await panel.close();
+    harness.cleanup();
+    await startPanel({ discord: { webhookUrl: 'https://discord.com/api/webhooks/1/x' } }, true);
+
+    const reply = await call('POST', '/api/v1/test-announce/discord', { body: {} });
+
+    expect(reply).toEqual({ status: 200, json: { ok: true } });
+    expect(harness.discord.send).toHaveBeenCalled();
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('запись с чужим Host или Origin отклоняется', async () => {
+    const host = await call('PUT', '/api/v1/text', { body: { text: 'x' }, headers: { host: `evil.example:${port}` } });
+    const origin = await call('POST', '/api/v1/probe', { body: {}, headers: { origin: 'https://evil.example' } });
+    const image = await call('PUT', '/api/v1/image', {
+      raw: Buffer.from([1]),
+      headers: { 'content-type': 'image/png', origin: 'https://evil.example' },
+    });
+
+    expect(host.status).toBe(403);
+    expect(origin.status).toBe(403);
+    expect(image.status).toBe(403);
+    expect(harness.store.announceText()).toBeNull();
+    expect(harness.store.announcePhoto()).toBeNull();
+  });
+
+  describe('без Telegram', () => {
+    beforeEach(async () => {
+      await panel.close();
+      harness.cleanup();
+      await startPanel({ discord: { webhookUrl: 'https://discord.com/api/webhooks/1/x' } }, true, false);
+    });
+
+    it('картинка хранится локально, неверный тип отклоняется', async () => {
+      const put = await call('PUT', '/api/v1/image', {
+        raw: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        headers: { 'content-type': 'image/png' },
+      });
+      const bad = await call('PUT', '/api/v1/image', { raw: Buffer.from([1]), headers: { 'content-type': 'image/gif' } });
+
+      expect(put.status).toBe(200);
+      expect(bad.status).toBe(415);
+      expect(harness.telegram.uploadPhoto).not.toHaveBeenCalled();
+      expect((await rawGet('/api/v1/image/file')).body).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+      await call('DELETE', '/api/v1/image');
+
+      expect(existsSync(join(harness.dataDir, 'announce-image.bin'))).toBe(false);
+    });
+
+    it('test-message идёт в Discord, test-announce в Telegram отвечает той же ошибкой', async () => {
+      const message = await call('POST', '/api/v1/test-message', { body: {} });
+      const headers = { 'accept-language': 'en' };
+      const v1 = await call('POST', '/api/v1/test-announce/telegram', { body: {}, headers });
+      const old = await call('POST', '/api/test-announce/telegram', { body: {}, headers });
+
+      expect(message.json).toEqual({ ok: true, results: [{ channel: 'discord', label: 'Discord', ok: true }] });
+      expect(v1.status).toBe(400);
+      expect(v1).toEqual(old);
+    });
+  });
+
   it('неизвестный путь и метод дают 404 с JSON-ошибкой на языке запроса', async () => {
     const unknown = await call('GET', '/api/v1/nope');
     const method = await call('POST', '/api/v1/status', { body: {} });

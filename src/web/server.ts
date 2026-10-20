@@ -220,10 +220,12 @@ export function createPanel(deps: PanelDeps): Panel {
         return sendJson(res, 200, status(lang));
 
       case 'POST /api/probe':
+      case 'POST /api/v1/probe':
         await needBot().tickNow();
         return sendJson(res, 200, status(lang));
 
-      case 'POST /api/test-message': {
+      case 'POST /api/test-message':
+      case 'POST /api/v1/test-message': {
         const bot = needBot();
         const text = t(lang, 'server.testMessage');
         const targets = [
@@ -247,7 +249,9 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'POST /api/test-announce/telegram':
-      case 'POST /api/test-announce/discord': {
+      case 'POST /api/v1/test-announce/telegram':
+      case 'POST /api/test-announce/discord':
+      case 'POST /api/v1/test-announce/discord': {
         const bot = needBot();
         const channel = url.pathname.endsWith('/discord') ? 'discord' : 'telegram';
         if (channel === 'telegram' && !bot.telegram) throw HttpError.localized(400, 'server.telegramNotConfigured');
@@ -261,9 +265,11 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'GET /api/text':
+      case 'GET /api/v1/text':
         return sendJson(res, 200, { text: needBot().store.announceText() });
 
-      case 'PUT /api/text': {
+      case 'PUT /api/text':
+      case 'PUT /api/v1/text': {
         const store = needBot().store;
         const body = await readJson(req);
         const text = typeof body.text === 'string' ? body.text.trim() : '';
@@ -273,10 +279,12 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'DELETE /api/text':
+      case 'DELETE /api/v1/text':
         needBot().store.clearAnnounceText();
         return sendJson(res, 200, { text: null });
 
-      case 'PUT /api/image': {
+      case 'PUT /api/image':
+      case 'PUT /api/v1/image': {
         const bot = needBot();
         const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim();
         if (!IMAGE_TYPES.has(type)) throw HttpError.localized(415, 'server.imageTypes');
@@ -307,7 +315,8 @@ export function createPanel(deps: PanelDeps): Panel {
         return sendJson(res, 200, { ok: true });
       }
 
-      case 'GET /api/image/file': {
+      case 'GET /api/image/file':
+      case 'GET /api/v1/image/file': {
         const bot = needBot();
         if (!bot.store.announcePhoto()) throw HttpError.localized(404, 'server.noImage');
         // Копия на диске; если её нет, load() один раз скачает файл из Telegram (без Telegram — null).
@@ -324,10 +333,12 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'DELETE /api/image':
+      case 'DELETE /api/v1/image':
         needBot().image.clear();
         return sendJson(res, 200, { ok: true });
 
-      case 'GET /api/preview': {
+      case 'GET /api/preview':
+      case 'GET /api/v1/preview': {
         const bot = needBot();
         return sendJson(res, 200, {
           ...bot.announcer.preview(),
