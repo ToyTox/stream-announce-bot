@@ -73,6 +73,7 @@ export const en: Record<keyof typeof ru, string> = {
   'server.fileEmpty': 'The file is empty',
   'server.notFound': 'Not found',
   'server.badLanguage': 'Unknown language',
+  'server.secretsViaApi': 'Secrets cannot be changed via the API: set them in the panel',
 
   // Settings form
   'settings.group.telegram': 'Telegram',
