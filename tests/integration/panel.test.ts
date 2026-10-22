@@ -756,6 +756,60 @@ describe('панель: /api/v1', () => {
     expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('GET /api/v1/settings не отдаёт секреты и маски, но показывает isSet', async () => {
+    const v1 = await call('GET', '/api/v1/settings');
+    const old = await call('GET', '/api/settings');
+    const token = v1.json.fields.find((field: any) => field.key === 'TELEGRAM_BOT_TOKEN');
+
+    expect(v1.status).toBe(200);
+    expect(token).toMatchObject({ secret: true, isSet: true });
+    expect('value' in token).toBe(false);
+    expect(JSON.stringify(v1.json)).not.toContain('AAHkSECRET');
+    expect(JSON.stringify(v1.json)).not.toContain('7712');
+    expect(JSON.stringify(v1.json)).not.toContain('xYz');
+    expect(v1.json.guides).toBeUndefined();
+    expect(v1.json.configError).toBe(old.json.configError);
+    for (const field of v1.json.fields.filter((item: any) => !item.secret)) {
+      expect(field).toEqual(old.json.fields.find((item: any) => item.key === field.key));
+    }
+  });
+
+  it('PUT /api/v1/settings меняет несекретное поле, перезапускает бота', async () => {
+    const reply = await call('PUT', '/api/v1/settings', { body: { values: { VKVIDEO_REPLAY_URL: 'https://vkvideo.ru/@me' } } });
+
+    expect(reply.status).toBe(200);
+    expect(reply.json.changed).toEqual(['VKVIDEO_REPLAY_URL']);
+    expect(readFileSync(envPath, 'utf8')).toContain('VKVIDEO_REPLAY_URL=https://vkvideo.ru/@me');
+    expect(runtime.restart).toHaveBeenCalledWith(env);
+  });
+
+  it('PUT /api/v1/settings с невалидным значением даёт 400 без записи', async () => {
+    const before = readFileSync(envPath, 'utf8');
+
+    const reply = await call('PUT', '/api/v1/settings', { body: { values: { TELEGRAM_CHAT_ID: '' } } });
+
+    expect(reply.status).toBe(400);
+    expect(reply.json.error).toContain('TELEGRAM_CHAT_ID');
+    expect(readFileSync(envPath, 'utf8')).toBe(before);
+    expect(runtime.restart).not.toHaveBeenCalled();
+  });
+
+  it('PUT /api/v1/settings с секретным ключом отклоняется целиком', async () => {
+    const before = readFileSync(envPath, 'utf8');
+
+    for (const secret of ['new-token', '']) {
+      const reply = await call('PUT', '/api/v1/settings', {
+        body: { values: { VKVIDEO_REPLAY_URL: 'https://vkvideo.ru/@me', TELEGRAM_BOT_TOKEN: secret } },
+        headers: { 'accept-language': 'en' },
+      });
+      expect(reply.status).toBe(400);
+      expect(reply.json.error).toBe('Secrets cannot be changed via the API: set them in the panel');
+    }
+    expect(readFileSync(envPath, 'utf8')).toBe(before);
+    expect(env.VKVIDEO_REPLAY_URL).toBeUndefined();
+    expect(runtime.restart).not.toHaveBeenCalled();
+  });
+
   it('запись с чужим Host или Origin отклоняется', async () => {
     const host = await call('PUT', '/api/v1/text', { body: { text: 'x' }, headers: { host: `evil.example:${port}` } });
     const origin = await call('POST', '/api/v1/probe', { body: {}, headers: { origin: 'https://evil.example' } });

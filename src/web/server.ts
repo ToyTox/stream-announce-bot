@@ -23,7 +23,7 @@ import { recentLogs } from '../log.js';
 import { TelegramError } from '../telegram/client.js';
 import { PLATFORMS, PLATFORM_LABELS } from '../types.js';
 import { replaceEnvFile, writeEnvFile } from './envFile.js';
-import { settingGuides, settingsChanges, settingsView } from './settings.js';
+import { hasSecretKey, settingGuides, settingsChanges, settingsView, settingsViewV1 } from './settings.js';
 
 /**
  * Локальная панель: настройки, статус, превью сообщений и лог. Слушает только
@@ -199,6 +199,27 @@ export function createPanel(deps: PanelDeps): Panel {
     };
   }
 
+  /** Общая часть PUT настроек: проверка, запись в .env, перезапуск бота. */
+  async function saveSettings(values: unknown, lang: Lang, source: string): Promise<Record<string, unknown>> {
+    const changes = settingsChanges(values, env);
+    const changed = Object.keys(changes);
+    if (changed.length === 0) return { ok: true, changed };
+
+    // Сначала проверка: невалидный конфиг не должен попасть ни в .env, ни в работающего бота.
+    try {
+      loadConfig({ ...env, ...changes });
+    } catch (error) {
+      if (error instanceof ConfigError) throw new HttpError(400, error.localize(lang));
+      throw error;
+    }
+
+    writeEnvFile(envPath, changes);
+    Object.assign(env, changes);
+    console.log(`⚙️  Настройки изменены ${source}: ${changed.join(', ')}`);
+    await runtime.restart(env);
+    return { ok: true, changed, configError: configErrorText(runtime, lang) };
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, lang: Lang): Promise<void> {
     const key = `${req.method} ${url.pathname}`;
     const needBot = () => requireBot(runtime, lang);
@@ -353,25 +374,21 @@ export function createPanel(deps: PanelDeps): Panel {
           configError: configErrorText(runtime, lang),
         });
 
+      case 'GET /api/v1/settings':
+        return sendJson(res, 200, {
+          fields: settingsViewV1(env, lang),
+          configError: configErrorText(runtime, lang),
+        });
+
       case 'PUT /api/settings': {
         const body = await readJson(req);
-        const changes = settingsChanges(body.values, env);
-        const changed = Object.keys(changes);
-        if (changed.length === 0) return sendJson(res, 200, { ok: true, changed });
+        return sendJson(res, 200, await saveSettings(body.values, lang, 'в панели'));
+      }
 
-        // Сначала проверка: невалидный конфиг не должен попасть ни в .env, ни в работающего бота.
-        try {
-          loadConfig({ ...env, ...changes });
-        } catch (error) {
-          if (error instanceof ConfigError) throw new HttpError(400, error.localize(lang));
-          throw error;
-        }
-
-        writeEnvFile(envPath, changes);
-        Object.assign(env, changes);
-        console.log(`⚙️  Настройки изменены в панели: ${changed.join(', ')}`);
-        await runtime.restart(env);
-        return sendJson(res, 200, { ok: true, changed, configError: configErrorText(runtime, lang) });
+      case 'PUT /api/v1/settings': {
+        const body = await readJson(req);
+        if (hasSecretKey(body.values)) throw HttpError.localized(400, 'server.secretsViaApi');
+        return sendJson(res, 200, await saveSettings(body.values, lang, 'через API'));
       }
 
       case 'POST /api/import-env': {

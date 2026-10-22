@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SETTING_FIELDS, settingGuides, settingsChanges, settingsView } from '../../src/web/settings.js';
+import { SETTING_FIELDS, hasSecretKey, settingGuides, settingsChanges, settingsView, settingsViewV1 } from '../../src/web/settings.js';
 
 describe('форма настроек', () => {
   it('подписи, подсказки и группы на русском по умолчанию', () => {
@@ -50,5 +50,27 @@ describe('форма настроек', () => {
       APP_LANGUAGE: 'en',
       ANNOUNCE_LANGUAGE: 'ru',
     });
+  });
+});
+
+describe('настройки для API v1', () => {
+  it('у секретов нет значения, только isSet; остальное как в панели', () => {
+    const env = { TELEGRAM_BOT_TOKEN: '7712345678:AAHkSECRETxYz', TELEGRAM_CHAT_ID: '-100123' };
+    const view = settingsViewV1(env);
+    const token = view.find((item) => item.key === 'TELEGRAM_BOT_TOKEN')!;
+
+    expect(token).toMatchObject({ secret: true, isSet: true });
+    expect('value' in token).toBe(false);
+    expect(JSON.stringify(view)).not.toContain('AAHkSECRET');
+    expect(view.find((item) => item.key === 'TELEGRAM_CHAT_ID')).toEqual(
+      settingsView(env).find((item) => item.key === 'TELEGRAM_CHAT_ID')
+    );
+  });
+
+  it('секретный ключ в запросе находится с любым значением', () => {
+    expect(hasSecretKey({ DISCORD_WEBHOOK_URL: '' })).toBe(true);
+    expect(hasSecretKey({ TELEGRAM_CHAT_ID: '1', YOUTUBE_API_KEY: 'x' })).toBe(true);
+    expect(hasSecretKey({ TELEGRAM_CHAT_ID: '1', UNKNOWN: 'x' })).toBe(false);
+    expect(hasSecretKey(null)).toBe(false);
   });
 });

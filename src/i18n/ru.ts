@@ -74,6 +74,7 @@ export const ru = {
   'server.fileEmpty': 'Файл пустой',
   'server.notFound': 'Не найдено',
   'server.badLanguage': 'Неизвестный язык',
+  'server.secretsViaApi': 'Секреты через API не меняются: задайте их в панели',
 
   // Форма настроек
   'settings.group.telegram': 'Telegram',

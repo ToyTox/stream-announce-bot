@@ -154,6 +154,23 @@ export function settingsView(env: Env, lang: Lang = DEFAULT_LANGUAGE): FieldView
   });
 }
 
+/** Поле для API v1: у секретов значения нет совсем, даже маски — только isSet. */
+export type FieldViewV1 = Omit<FieldView, 'value'> & { value?: string };
+
+export function settingsViewV1(env: Env, lang: Lang = DEFAULT_LANGUAGE): FieldViewV1[] {
+  return settingsView(env, lang).map((field) => {
+    if (!field.secret) return field;
+    const { value, ...rest } = field;
+    return rest;
+  });
+}
+
+/** Есть ли в запросе секретный ключ (с любым значением): через API секреты не меняются. */
+export function hasSecretKey(input: unknown): boolean {
+  if (!input || typeof input !== 'object') return false;
+  return Object.keys(input as Record<string, unknown>).some((key) => FIELDS_BY_KEY.get(key)?.secret);
+}
+
 /**
  * Изменения из формы → значения для .env. Незнакомые ключи отбрасываем, пустой
  * секрет значит «оставить как есть»: браузер его настоящего значения не знает.
