@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 export type Db = Database.Database;
 
 // Схема: broadcast — эфир, broadcast_stream — платформы этого эфира, broadcast_delivery — доставка анонса
-// по площадкам (Telegram, Discord), setting — состояние бота.
+// по площадкам (Telegram, Discord), setting — состояние бота, device — устройства мобильного приложения.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS broadcast (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS broadcast_delivery (
   PRIMARY KEY (broadcast_id, channel)
 );
 CREATE TABLE IF NOT EXISTS setting (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS device (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE, -- SHA-256 токена; сам токен в базе не хранится
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER,
+  revoked_at INTEGER               -- NULL = токен действует
+);
 `;
 
 // Эфиры, анонсированные до появления таблицы доставки, считаются доставленными в Telegram:

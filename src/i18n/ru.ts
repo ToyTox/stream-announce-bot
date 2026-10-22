@@ -75,6 +75,7 @@ export const ru = {
   'server.notFound': 'Не найдено',
   'server.badLanguage': 'Неизвестный язык',
   'server.secretsViaApi': 'Секреты через API не меняются: задайте их в панели',
+  'server.unauthorized': 'Неверный или отозванный токен устройства',
 
   // Форма настроек
   'settings.group.telegram': 'Telegram',
