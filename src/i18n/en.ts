@@ -74,6 +74,7 @@ export const en: Record<keyof typeof ru, string> = {
   'server.notFound': 'Not found',
   'server.badLanguage': 'Unknown language',
   'server.secretsViaApi': 'Secrets cannot be changed via the API: set them in the panel',
+  'server.unauthorized': 'Invalid or revoked device token',
 
   // Settings form
   'settings.group.telegram': 'Telegram',

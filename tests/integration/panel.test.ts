@@ -9,6 +9,8 @@ import type { Env } from '../../src/config.js';
 import type { DiscordClient } from '../../src/discord/client.js';
 import type { TelegramClient } from '../../src/telegram/client.js';
 import { pushLog } from '../../src/log.js';
+import { openDb } from '../../src/db.js';
+import { DeviceStore } from '../../src/devices.js';
 import { createPanel, type Panel, type PanelRuntime } from '../../src/web/server.js';
 import { createHarness, liveStream, testConfig, type Harness } from '../helpers/announcerHarness.js';
 
@@ -877,5 +879,65 @@ describe('панель: /api/v1', () => {
 
     expect(host.status).toBe(403);
     expect(origin.status).toBe(403);
+  });
+});
+
+describe('панель: Bearer для /api/v1', () => {
+  function registry(): { devices: DeviceStore; close(): void } {
+    env.DATABASE_PATH = join(dir, 'bot.db');
+    const db = openDb(env.DATABASE_PATH);
+    return { devices: new DeviceStore(db), close: () => db.close() };
+  }
+  const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+
+  it('верный токен пропускает запрос и отмечает время использования', async () => {
+    const { devices, close } = registry();
+    const { device, token } = devices.issue('Pixel');
+
+    const reply = await call('GET', '/api/v1/info', { headers: bearer(token) });
+
+    expect(reply.status).toBe(200);
+    expect(devices.list().find((d) => d.id === device.id)?.lastUsedAt).not.toBeNull();
+    close();
+  });
+
+  it('неверный, отозванный токен и кривой заголовок дают 401', async () => {
+    const { devices, close } = registry();
+    const { device, token } = devices.issue('Pixel');
+    devices.revoke(device.id);
+
+    for (const headers of [bearer('A'.repeat(43)), bearer(token), bearer('short'), { authorization: 'Basic abc' }, { authorization: 'Bearer' }]) {
+      const reply = await call('GET', '/api/v1/info', { headers });
+      expect(reply.status).toBe(401);
+      expect(reply.json.error).toContain('токен');
+    }
+    close();
+  });
+
+  it('без заголовка с localhost запрос проходит как раньше', async () => {
+    expect((await call('GET', '/api/v1/info')).status).toBe(200);
+  });
+
+  it('/api/* панели не зависит от заголовка Authorization', async () => {
+    expect((await call('GET', '/api/status', { headers: { authorization: 'Bearer garbage' } })).status).toBe(200);
+  });
+
+  it('при неработающем боте реестр работает, 500 нет', async () => {
+    runtime.bot = null;
+    runtime.configError = 'нет токена';
+    const { devices, close } = registry();
+    const { token } = devices.issue('Pixel');
+
+    expect((await call('GET', '/api/v1/status', { headers: bearer(token) })).status).toBe(200);
+    expect((await call('GET', '/api/v1/status', { headers: bearer('A'.repeat(43)) })).status).toBe(401);
+    close();
+  });
+
+  it('если базу не открыть, токен даёт 401, а не 500', async () => {
+    env.DATABASE_PATH = join(dir, 'нет', '\0', 'bot.db');
+
+    const reply = await call('GET', '/api/v1/info', { headers: bearer('A'.repeat(43)) });
+
+    expect(reply.status).toBe(401);
   });
 });

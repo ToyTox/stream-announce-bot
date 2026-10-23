@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { channelUrl } from '../announcer.js';
 import type { Bot } from '../bot.js';
 import { ConfigError, loadConfig, type Env } from '../config.js';
+import { openDb, type Db } from '../db.js';
+import { DeviceStore } from '../devices.js';
 import {
   announceLanguageFromEnv,
   languageFromEnv,
@@ -146,6 +148,20 @@ function checkTrusted(req: IncomingMessage, port: number): void {
   }
 }
 
+/** Токен из заголовка Authorization: undefined, если заголовка нет; пустая строка, если он не Bearer. */
+function bearerToken(req: IncomingMessage): string | undefined {
+  const header = req.headers.authorization;
+  if (header === undefined) return undefined;
+  const match = /^Bearer +(\S+)$/i.exec(header.trim());
+  return match ? match[1] : '';
+}
+
+/** Запрос пришёл с этого же компьютера. */
+function isLocalRequest(req: IncomingMessage): boolean {
+  const address = req.socket.remoteAddress ?? '';
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
 /** Причина, по которой бот не запущен, на языке lang. */
 function configErrorText(runtime: PanelRuntime, lang: Lang): string | null {
   return runtime.configErrorSource?.localize(lang) ?? runtime.configError;
@@ -169,6 +185,41 @@ function errorText(error: unknown): string {
 
 export function createPanel(deps: PanelDeps): Panel {
   const { runtime, env, envPath, defaults = {}, version = '' } = deps;
+
+  // Реестр устройств живёт в той же базе, что и бот, но открывается отдельным соединением:
+  // бот может быть не запущен (ошибка конфигурации) или перезапускаться через runtime.restart.
+  let devicesDb: { path: string; db: Db } | undefined;
+
+  function devices(): DeviceStore | undefined {
+    const path = env.DATABASE_PATH?.trim() || defaults.DATABASE_PATH?.trim() || './data/bot.db';
+    if (devicesDb?.path !== path) {
+      devicesDb?.db.close();
+      devicesDb = undefined;
+      try {
+        devicesDb = { path, db: openDb(path) };
+      } catch (error) {
+        console.error('❌ Не удалось открыть реестр устройств:', errorText(error));
+        return undefined;
+      }
+    }
+    return new DeviceStore(devicesDb.db);
+  }
+
+  /**
+   * Проверка Bearer для /api/v1/*. Токен в заголовке должен быть действующим.
+   * Без заголовка запрос с localhost проходит; для остальных адресов обязательный токен появится в задаче 9.
+   */
+  function checkBearer(req: IncomingMessage): void {
+    const token = bearerToken(req);
+    if (token === undefined) {
+      if (isLocalRequest(req)) return;
+      throw HttpError.localized(401, 'server.unauthorized');
+    }
+    const store = devices();
+    const device = store?.findByToken(token);
+    if (!store || !device) throw HttpError.localized(401, 'server.unauthorized');
+    store.touch(device.id);
+  }
 
   function status(lang: Lang) {
     const bot = runtime.bot;
@@ -457,7 +508,9 @@ export function createPanel(deps: PanelDeps): Panel {
       try {
         const port = (server.address() as AddressInfo).port;
         checkTrusted(req, port);
-        await route(req, res, new URL(req.url ?? '/', `http://localhost:${port}`), lang);
+        const url = new URL(req.url ?? '/', `http://localhost:${port}`);
+        if (url.pathname.startsWith('/api/v1/')) checkBearer(req);
+        await route(req, res, url, lang);
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;
         if (status === 500) console.error('❌ Ошибка панели:', errorText(error));
@@ -473,7 +526,11 @@ export function createPanel(deps: PanelDeps): Panel {
     port: 0,
     close: () =>
       new Promise((resolve) => {
-        server.close(() => resolve());
+        server.close(() => {
+          devicesDb?.db.close();
+          devicesDb = undefined;
+          resolve();
+        });
         server.closeAllConnections();
       }),
   };
