@@ -22,6 +22,7 @@ import {
   type Params,
 } from '../i18n/index.js';
 import { recentLogs } from '../log.js';
+import { StaticLinksError } from '../store.js';
 import { TelegramError } from '../telegram/client.js';
 import { PLATFORMS, PLATFORM_LABELS } from '../types.js';
 import { replaceEnvFile, writeEnvFile } from './envFile.js';
@@ -348,6 +349,22 @@ export function createPanel(deps: PanelDeps): Panel {
         if (text) store.setAnnounceText(text);
         else store.clearAnnounceText();
         return sendJson(res, 200, { text: store.announceText() });
+      }
+
+      case 'GET /api/links':
+      case 'GET /api/v1/links':
+        return sendJson(res, 200, { links: needBot().store.staticLinks() });
+
+      case 'PUT /api/links':
+      case 'PUT /api/v1/links': {
+        const store = needBot().store;
+        const body = await readJson(req);
+        try {
+          return sendJson(res, 200, { links: store.setStaticLinks(body.links) });
+        } catch (error) {
+          if (error instanceof StaticLinksError) throw HttpError.localized(400, error.key, error.params);
+          throw error;
+        }
       }
 
       case 'DELETE /api/text':
