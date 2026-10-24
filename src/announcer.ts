@@ -392,7 +392,11 @@ export class Announcer {
     const started = this.store.deliveriesOf(fresh.id).length > 0;
     // Ждём остальные площадки: OBS поднимает их с разницей в десятки секунд.
     // Когда доставка начата, grace уже позади: недоставленные площадки повторяются каждый тик.
-    if (started || now - fresh.startedAt >= this.config.announceGraceMs) {
+    // Со статическими ссылками остальные площадки для ссылок не нужны: уходим, как только в эфире приоритетная.
+    const primaryLive =
+      this.store.alwaysLinks().length > 0 &&
+      this.store.liveStreamsOf(fresh.id).some((stream) => stream.platform === this.config.primaryPlatform);
+    if (started || primaryLive || now - fresh.startedAt >= this.config.announceGraceMs) {
       await this.announce(fresh.id, now);
     }
   }
@@ -432,6 +436,20 @@ export class Announcer {
   }
 
   /**
+   * Статические ссылки анонса; null — анонс собирается из живых стримов. До первой доставки список живой,
+   * после — зафиксированный: правка списка во время эфира не меняет повтор для другой площадки.
+   */
+  private staticLinks(broadcastId: number, announced: boolean): ChannelLink[] | null {
+    if (announced) return this.store.linksSnapshot(broadcastId)?.links ?? null;
+    return this.alwaysChannelLinks();
+  }
+
+  private alwaysChannelLinks(): ChannelLink[] | null {
+    const always = this.store.alwaysLinks();
+    return always.length > 0 ? always.map(({ label, url }) => ({ label, url })) : null;
+  }
+
+  /**
    * Заголовок, игру и превью берём только с приоритетной площадки: на других
    * названия могут отличаться. Ищем и среди отвалившихся, чтобы заголовок не
    * пропадал из сообщения, пока площадка моргает.
@@ -444,7 +462,10 @@ export class Announcer {
 
   private async announce(broadcastId: number, now: number): Promise<void> {
     const source = this.source(broadcastId);
-    const links = this.links(broadcastId);
+    const broadcast = this.store.openBroadcast();
+    const announced = broadcast !== null && broadcast.announcedAt !== null;
+    const fixedLinks = this.staticLinks(broadcastId, announced);
+    const links = fixedLinks ?? this.links(broadcastId);
     if (links.length === 0) return;
 
     // Площадки фиксируются на первой попытке: добавленная позже догоняющего анонса не получит.
@@ -461,7 +482,6 @@ export class Announcer {
     if (pending.length === 0) return;
 
     // До первой доставки врезка живая, после — зафиксированная: повтор для другой площадки не должен подхватить новую /text.
-    const broadcast = this.store.openBroadcast();
     const customText = broadcast && broadcast.announcedAt !== null ? broadcast.announceText : this.store.announceText();
     const request: AnnounceRequest = {
       input: {
@@ -482,13 +502,13 @@ export class Announcer {
 
       if (this.config.dryRun) {
         console.log(`🧪 DRY_RUN, сообщение в ${channel.label} не отправлено:\n` + prepared.text);
-        this.recordAnnounced(broadcastId, channel, now, { messageId: null, target: null }, customText);
+        this.recordAnnounced(broadcastId, channel, now, { messageId: null, target: null }, customText, fixedLinks);
         continue;
       }
 
       try {
         const sent = await prepared.send();
-        this.recordAnnounced(broadcastId, channel, now, sent, customText);
+        this.recordAnnounced(broadcastId, channel, now, sent, customText, fixedLinks);
         console.log(`✅ Анонс отправлен (${channel.label}): ${links.map((link) => link.label).join(', ')}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -509,12 +529,14 @@ export class Announcer {
     channel: DeliveryChannel,
     now: number,
     sent: Sent,
-    customText: string | null
+    customText: string | null,
+    fixedLinks: ChannelLink[] | null
   ): void {
     const first = this.store.openBroadcast()?.announcedAt === null;
     this.store.markDelivered(broadcastId, channel.id, now, sent.messageId, sent.target);
     if (!first) return;
     this.store.markAnnounced(broadcastId, now, customText);
+    this.store.setLinksSnapshot({ broadcastId, links: fixedLinks }, now);
     this.store.clearAnnounceText();
     this.emit({
       type: 'announced',
@@ -613,7 +635,8 @@ export class Announcer {
     const language = this.config.announceLanguage;
     const title = source?.title ?? t(language, 'announce.sampleTitle');
     const game = source ? source.game : t(language, 'announce.sampleGame');
-    return { broadcast, source, title, game, links: this.channelLinks(), language };
+    const links = this.channelLinks();
+    return { broadcast, source, title, game, links, announceLinks: this.alwaysChannelLinks() ?? links, language };
   }
 
   /**
@@ -624,14 +647,14 @@ export class Announcer {
   async testAnnounce(channelId: 'telegram' | 'discord'): Promise<void> {
     const channel = this.channels.find((item) => item.id === channelId);
     if (!channel) throw new Error(`${channelId}: площадка не настроена`);
-    const { source, title, game, links, language } = this.previewContext();
+    const { source, title, game, announceLinks, language } = this.previewContext();
     await channel
       .prepareAnnounce({
         input: {
           title,
           game,
           customText: this.store.announceText(),
-          links,
+          links: announceLinks,
           language,
           marker: t(language, 'announce.testMarker'),
         },
@@ -648,10 +671,10 @@ export class Announcer {
    * с настоящими названием и игрой. Ссылки — на каналы, ведь эфира может и не быть.
    */
   preview(): { announce: string; finished: string } {
-    const { broadcast, title, game, links, language } = this.previewContext();
+    const { broadcast, title, game, links, announceLinks, language } = this.previewContext();
 
     return {
-      announce: renderAnnounce({ title, game, customText: this.store.announceText(), links, language }),
+      announce: renderAnnounce({ title, game, customText: this.store.announceText(), links: announceLinks, language }),
       finished: renderFinished({
         title,
         game,

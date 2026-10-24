@@ -842,3 +842,138 @@ describe('Announcer: картинка только с локальным фай�
     expect(harness.discord.send.mock.calls[0]?.[1]).toMatchObject({ name: 'announce.webp' });
   });
 });
+
+describe('Announcer: статические ссылки', () => {
+  const kick = { label: 'Kick', url: 'https://kick.com/me', always: true };
+  const boosty = { label: 'Boosty', url: 'https://boosty.to/me', always: true };
+  const hidden = { label: 'Скрытая', url: 'https://hidden.example/me', always: false };
+
+  beforeEach(() => {
+    harness.cleanup();
+    harness = createHarness({}, undefined, { discord: true });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: new Uint8Array([0xff, 0xd8, 0xff]).buffer,
+      headers: { 'content-type': 'image/jpeg' },
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('отмеченные ссылки заменяют живые, неотмеченные не попадают, порядок пользовательский', async () => {
+    harness.store.setStaticLinks([boosty, hidden, kick]);
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    harness.watchers.youtube.state = liveStream('youtube', harness.clock);
+
+    await run(3);
+
+    const text = caption();
+    expect(text).toContain('<a href="https://boosty.to/me">Boosty</a>');
+    expect(text).toContain('<a href="https://kick.com/me">Kick</a>');
+    expect(text.indexOf('Boosty')).toBeLessThan(text.indexOf('Kick'));
+    expect(text).not.toContain('Скрытая');
+    expect(text).not.toContain('twitch.tv');
+    expect(text).not.toContain('youtube.com');
+    expect(harness.discord.send.mock.calls[0]?.[0].embeds?.[0]?.description).toContain('[Kick](https://kick.com/me)');
+  });
+
+  it('пустой список или нет отмеченных — прежнее поведение', async () => {
+    harness.store.setStaticLinks([hidden]);
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    await run(3);
+
+    expect(caption()).toContain('twitch.tv');
+    expect(caption()).not.toContain('Скрытая');
+  });
+
+  it('с приоритетной площадкой анонс уходит сразу, не дожидаясь grace', async () => {
+    harness.store.setStaticLinks([kick]);
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    await harness.announcer.tick();
+
+    expect(harness.telegram.sendPhoto).toHaveBeenCalledTimes(1);
+    expect(caption()).toContain('Вечерний стрим');
+    expect(caption()).toContain('Kick');
+  });
+
+  it('без приоритетной площадки анонс ждёт ANNOUNCE_GRACE_MS', async () => {
+    harness.store.setStaticLinks([kick]);
+    harness.watchers.youtube.state = liveStream('youtube', harness.clock);
+
+    await harness.announcer.tick();
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+
+    await run(2);
+
+    expect(harness.telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(harness.telegram.sendMessage.mock.calls[0]?.[0]).toContain('Kick');
+  });
+
+  it('без отметок ранний старт не включается', async () => {
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    await harness.announcer.tick();
+
+    expect(harness.telegram.sendPhoto).not.toHaveBeenCalled();
+  });
+
+  it('повтор для другой площадки берёт зафиксированные ссылки, а не правку списка', async () => {
+    harness.store.setStaticLinks([kick]);
+    harness.discord.send.mockRejectedValueOnce(new DiscordError('upstream', 'Discord недоступен'));
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    await harness.announcer.tick();
+    expect(caption()).toContain('Kick');
+
+    harness.store.setStaticLinks([{ ...boosty }]);
+    await run(1);
+
+    const description = harness.discord.send.mock.calls[1]?.[0].embeds?.[0]?.description;
+    expect(description).toContain('[Kick](https://kick.com/me)');
+    expect(description).not.toContain('Boosty');
+  });
+
+  it('эфир, начатый с живыми ссылками, не переходит на статические при повторе', async () => {
+    harness.discord.send.mockRejectedValueOnce(new DiscordError('upstream', 'Discord недоступен'));
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+    await run(3);
+
+    harness.store.setStaticLinks([kick]);
+    await run(1);
+
+    const description = harness.discord.send.mock.calls[1]?.[0].embeds?.[0]?.description;
+    expect(description).toContain('twitch.tv');
+    expect(description).not.toContain('Kick');
+  });
+
+  it('превью и тестовый анонс показывают отмеченные ссылки, итог эфира — каналы', async () => {
+    harness.store.setStaticLinks([kick, hidden]);
+
+    const preview = harness.announcer.preview();
+    await harness.announcer.testAnnounce('telegram');
+
+    expect(preview.announce).toContain('Kick');
+    expect(preview.announce).not.toContain('Скрытая');
+    expect(preview.finished).not.toContain('Kick');
+    expect(harness.telegram.sendMessage.mock.calls[0]?.[0]).toContain('Kick');
+  });
+
+  it('событие announced и итог эфира не меняются', async () => {
+    const events: AnnouncerEvent[] = [];
+    harness.cleanup();
+    harness = createHarness({}, (event) => events.push(event));
+    harness.store.setStaticLinks([kick]);
+    harness.watchers.twitch.state = liveStream('twitch', harness.clock);
+
+    await harness.announcer.tick();
+    harness.watchers.twitch.state = null;
+    await run(5);
+
+    expect(events[0]).toEqual({ type: 'announced', platforms: ['Twitch'] });
+    const finished = harness.telegram.sendMessage.mock.calls.at(-1)?.[0] ?? '';
+    expect(finished).not.toContain('Kick');
+  });
+});

@@ -260,3 +260,61 @@ describe('formatDuration: английский', () => {
     expect(formatDuration(ms, 'en')).toBe(expected);
   });
 });
+
+describe('произвольные ссылки пользователя', () => {
+  const tricky = [
+    { label: 'A & <b>B</b> *_`', url: 'https://example.com/?a=1&b="2"<x>' },
+    { label: 'Kick (live) [1]', url: 'https://kick.com/me(1)' },
+  ];
+
+  it('Telegram HTML: название и адрес экранированы, кавычка не закрывает href', () => {
+    const text = renderAnnounce({ title: 'Стрим', links: tricky });
+
+    expect(text).toContain('<a href="https://example.com/?a=1&amp;b=&quot;2&quot;&lt;x&gt;">A &amp; &lt;b&gt;B&lt;/b&gt; *_`</a>');
+    expect(text).not.toContain('<b>B</b>');
+  });
+
+  it('Discord Markdown: название экранировано, адрес не ломает скобки ссылки', () => {
+    const text = renderDiscordAnnounce({ title: 'Stream', links: tricky });
+
+    expect(text).toContain('[A & \\<b\\>B\\</b\\> \\*\\_\\`](https://example.com/?a=1&b="2"%3Cx%3E)');
+    expect(text).toContain('[Kick \\(live\\) \\[1\\]](https://kick.com/me%281%29)');
+  });
+});
+
+describe('предел подписи со ссылками', () => {
+  const many = Array.from({ length: 20 }, (_, i) => ({
+    label: `${i}`.padEnd(64, 'я'),
+    url: `https://example.com/${i}/${'a'.repeat(400)}`,
+  }));
+  const hrefs = (text: string) => (text.match(/<a href="[^"]*">/g) ?? []).length;
+
+  it('максимум ссылок и длинный заголовок: подпись в лимите, разметка цела', () => {
+    const text = renderAnnounce({ title: 'З'.repeat(250), game: 'И'.repeat(100), customText: 'врезка '.repeat(50), links: many });
+
+    expect(text.length).toBeLessThanOrEqual(CAPTION_LIMIT);
+    expect(hrefs(text)).toBeGreaterThanOrEqual(1);
+    expect(hrefs(text)).toBe((text.match(/<\/a>/g) ?? []).length);
+    expect(text.split('\n').filter((line) => line.startsWith('▶️')).every((line) => line.endsWith('</a>'))).toBe(true);
+  });
+
+  it('врезка сокращается раньше ссылок', () => {
+    const three = many.slice(0, 3).map((link) => ({ ...link, url: link.url.slice(0, 100) }));
+    const text = renderAnnounce({ title: 'Стрим', customText: 'врезка '.repeat(200), links: three });
+
+    expect(text.length).toBeLessThanOrEqual(CAPTION_LIMIT);
+    expect(hrefs(text)).toBe(3);
+    expect(text).toContain('…');
+  });
+
+  it('отрицательный бюджет врезки: врезки нет, ссылка на месте', () => {
+    const base = renderAnnounce({ title: 'Стрим', links: [{ label: 'x', url: 'https://a.example/' }] });
+    // Ссылка занимает всё место до лимита без одного символа: на врезку бюджета нет.
+    const url = `https://a.example/${'b'.repeat(CAPTION_LIMIT - base.length - 1)}`;
+    const text = renderAnnounce({ title: 'Стрим', customText: 'врезка', links: [{ label: 'x', url }] });
+
+    expect(text.length).toBeLessThanOrEqual(CAPTION_LIMIT);
+    expect(text).not.toContain('врезка');
+    expect(hrefs(text)).toBe(1);
+  });
+});

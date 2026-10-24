@@ -115,6 +115,9 @@
   }
   textarea { min-height: 110px; resize: vertical; }
   textarea:focus, input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
+  .link-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; gap: 6px 8px; align-items: center; margin-bottom: 10px; }
+  .link-row .link-opts { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .link-row .link-opts input { width: auto; }
   .image-box {
     display: flex; gap: 14px; align-items: center; margin-bottom: 12px;
   }
@@ -204,6 +207,17 @@
             <button class="btn primary" id="text-save" data-i18n="ui.save"></button>
             <button class="btn" id="text-clear" data-i18n="ui.reset"></button>
             <span id="text-result" class="result"></span>
+          </div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="ui.links.title"></h2>
+          <p class="muted small" style="margin-top: -6px" data-i18n="ui.links.note"></p>
+          <div id="links-list" class="links-list"></div>
+          <div class="row" style="margin-top: 10px">
+            <button class="btn" id="links-add" data-i18n="ui.links.add"></button>
+            <button class="btn" id="links-add-channels" data-i18n="ui.links.addChannels"></button>
+            <button class="btn primary" id="links-save" data-i18n="ui.save"></button>
+            <span id="links-result" class="result"></span>
           </div>
         </div>
         <div class="card">
@@ -549,11 +563,108 @@
     }
   }
 
+  // ---------- Ссылки в анонсе ----------
+  let links = [];
+  // Пока список не загружен, редактор заблокирован: пустой список иначе затёр бы сохранённые ссылки.
+  let linksLoaded = false;
+
+  function setLinksEditable(editable) {
+    for (const id of ['links-add', 'links-add-channels', 'links-save']) $(id).disabled = !editable;
+  }
+
+  function renderLinks() {
+    const list = $('links-list');
+    if (!linksLoaded) return;
+    if (links.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'muted small';
+      empty.textContent = t('ui.links.empty');
+      list.replaceChildren(empty);
+      return;
+    }
+    list.replaceChildren(...links.map((link, index) => {
+      const row = document.createElement('div');
+      row.className = 'link-row';
+      const label = document.createElement('input');
+      label.value = link.label; label.placeholder = t('ui.links.label');
+      label.addEventListener('input', () => { link.label = label.value; });
+      const url = document.createElement('input');
+      url.value = link.url; url.placeholder = t('ui.links.url');
+      url.addEventListener('input', () => { link.url = url.value; });
+      const remove = document.createElement('button');
+      remove.className = 'btn'; remove.type = 'button'; remove.textContent = t('ui.links.remove');
+      remove.addEventListener('click', () => { links.splice(index, 1); renderLinks(); });
+      const opts = document.createElement('div');
+      opts.className = 'link-opts';
+      const always = document.createElement('input');
+      always.type = 'checkbox'; always.checked = link.always;
+      always.addEventListener('change', () => { link.always = always.checked; });
+      const alwaysLabel = document.createElement('label');
+      alwaysLabel.append(always, ` ${t('ui.links.always')}`);
+      const move = (delta) => {
+        const target = index + delta;
+        [links[index], links[target]] = [links[target], links[index]];
+        renderLinks();
+      };
+      const up = document.createElement('button');
+      up.className = 'btn'; up.type = 'button'; up.textContent = t('ui.links.up'); up.disabled = index === 0;
+      up.addEventListener('click', () => move(-1));
+      const down = document.createElement('button');
+      down.className = 'btn'; down.type = 'button'; down.textContent = t('ui.links.down'); down.disabled = index === links.length - 1;
+      down.addEventListener('click', () => move(1));
+      opts.append(alwaysLabel, up, down);
+      row.append(label, url, remove, opts);
+      return row;
+    }));
+  }
+
+  async function loadLinks() {
+    try {
+      links = (await api('GET', '/api/links')).links;
+      linksLoaded = true;
+      setLinksEditable(true);
+      renderLinks();
+    } catch (error) {
+      linksLoaded = false;
+      setLinksEditable(false);
+      const failed = document.createElement('div');
+      failed.className = 'muted small';
+      failed.textContent = error.message;
+      $('links-list').replaceChildren(failed);
+    }
+  }
+  setLinksEditable(false);
+
+  $('links-add').addEventListener('click', () => {
+    links.push({ label: '', url: '', always: true });
+    renderLinks();
+  });
+  // Ссылки настроенных каналов — заготовки: уже добавленные адреса не дублируем.
+  $('links-add-channels').addEventListener('click', () => {
+    const known = new Set(links.map((link) => link.url));
+    const fresh = (lastStatus?.platforms ?? []).filter((p) => !known.has(p.url));
+    for (const p of fresh) links.push({ label: p.label, url: p.url, always: false });
+    renderLinks();
+    showResult($('links-result'), true, fresh.length ? t('ui.links.channelsAdded', { count: fresh.length }) : t('ui.links.nothingToAdd'));
+  });
+  $('links-save').addEventListener('click', (e) => withButton(e.currentTarget, async () => {
+    if (!linksLoaded) return;
+    try {
+      links = (await api('PUT', '/api/links', { links })).links;
+      renderLinks();
+      showResult($('links-result'), true, t('ui.text.saved'));
+      await loadPreview();
+    } catch (error) {
+      showResult($('links-result'), false, error.message);
+    }
+  }));
+
   async function loadMessageTab() {
     try {
       const { text } = await api('GET', '/api/text');
       if (document.activeElement !== $('text')) $('text').value = text ?? '';
     } catch {}
+    await loadLinks();
     await loadPreview();
   }
   loaders.message = loadMessageTab;
