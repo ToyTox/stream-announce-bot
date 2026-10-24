@@ -130,6 +130,47 @@ In 10–15 minutes a release with three files (`arm64.dmg`, `x64.dmg`, `x64.exe`
 
 Local trial build: `npm run dist:mac` or `npm run dist:win` (the result is in `release/`). If the terminal sets `ELECTRON_RUN_AS_NODE` (VS Code), run with `env -u ELECTRON_RUN_AS_NODE`.
 
+## Chapter audit
+
+When the last task of chapter A, B or C from `docs/mobile-app-plan.md` is closed on `main`, an audit starts shortly before the weekly Claude Code subscription limit resets: the `chapter-auditor` agent (model `fable`) writes a report with a follow-up plan to `docs/audits/chapter-<chapter>.md`. Mac only, via a LaunchAgent.
+
+### Launch security
+
+- `claude -p` runs with `--permission-mode dontAsk`: anything not explicitly allowed is denied without a prompt. Permission bypass modes and disabled prompts are not used.
+- Tools: only Read, Grep, Glob and Write (`--tools`). No Bash, network, subagents or MCP.
+- Writing is allowed by an `Edit(...)` rule only for `docs/audits/` in a separate working copy of `main` (`Edit` rules also cover Write).
+- The script runs git before the model starts: it reads the plan from `main`, checks for a report, creates a separate working copy of `main` (your working tree and branch are untouched) and puts the history in a file for the agent. The script copies the finished report to `docs/audits/` of the main repository; you commit it yourself.
+
+### Install and manage
+
+The limit reset time (see your subscription settings) is set manually, only at install:
+
+```bash
+node scripts/chapter-audit.mjs install --day Tue --time 18:30 --lead 120 --tz Europe/Moscow
+```
+
+- `--day` is the reset weekday, `--time` the reset time, `--lead` the lead in minutes before the reset (default 120), `--tz` the time zone of the reset time (the Mac's time zone if omitted). The LaunchAgent fires every 15 minutes inside the window. launchd reads the schedule only in the Mac's time zone, so when `--tz` differs from the Mac's, install converts the window to the Mac's zone by real time, taking the daylight saving dates of both zones into account for a year ahead. Reinstall (`install` or `settings`) within a year and after changing the Mac's time zone. The script still decides whether to run using the `--tz` zone.
+- Change settings: `node scripts/chapter-audit.mjs settings --lead 180` (reinstalls the LaunchAgent).
+- Remove: `node scripts/chapter-audit.mjs uninstall`.
+- Run manually for a chapter without waiting for the window: `node scripts/chapter-audit.mjs run-now A`. Before calling the model it checks the chapter report (in the working directory and on `main`), whether the chapter is closed on `main`, the agent on `main`, and the time left until the limit reset. If a report already exists or the chapter is not closed, `run-now` refuses. The `--force-open` flag lifts only the "chapter is closed" check (`run-now A --force-open`); the report and the time until reset are always checked. The window before the reset is not checked. The `--dry-run` flag prints the decision for all checks and the `claude` command without running anything.
+- Settings, state and log are in `~/.stream-announce-bot-audit/` (`config.json`, `state.json`, `audit.log`). Two simultaneous runs are blocked.
+
+### Before the first run
+
+The working copy is made from `main`, so the `.claude/agents/chapter-auditor.md` agent and the `scripts/chapter-audit*.mjs` scripts must be committed to `main`. Until they are there, the audit will not start: the script writes a warning to the log and console and does not call `claude`.
+
+Manual checks on the Mac: `claude --help` (the flags from "Launch security" exist), `claude --model fable -p "ok"` (the `fable` model is accepted), and after install `launchctl print gui/$UID/com.stream-announce-bot.chapter-audit` (the schedule, especially with `--tz` different from the Mac's zone).
+
+### Limits
+
+Every `claude` run, scheduled or manual, is forcibly stopped 5 minutes before the nearest limit reset (and no later than 4 hours in); if less than 25 minutes remain before the reset, the model is not started and the reason is written to the log. The report lands in `docs/audits/` only after a successful run: `claude` exited with code 0, was not stopped by the timer, and the report is complete (its last line is the `<!-- chapter-audit: complete -->` marker). Otherwise (error, timeout, turns exhausted, incomplete report) the chapter stays unaudited and the next attempt is in the next window; a partial report is kept for diagnostics in `~/.stream-announce-bot-audit/partial-chapter-<chapter>.md`, and the reason goes to `audit.log`.
+
+The audit spends what is left of the weekly limit before the reset and occupies the current 5-hour window. If the limit is exhausted or the run fails, the next attempt is in the window a week later. A missed window is also moved to the next week; the audit does not spend the new week's limit.
+
+### Sleeping Mac
+
+A sleeping Mac misses the window. You can wake it in advance with `pmset repeat wakeorpoweron` (see `man pmset`; needs `sudo`, the script does not run it). If the Mac runs with the lid closed, see "Running on a Mac without sleep".
+
 ## Web panel
 
 The panel starts together with the bot — open **http://localhost:3210**. The link is also printed in the terminal at startup.
