@@ -3,6 +3,9 @@ import { DEFAULT_LANGUAGE, t, type Lang } from './i18n/index.js';
 /** Подпись к фото в Telegram ограничена 1024 символами — за этим следит trimToLimit(). */
 export const CAPTION_LIMIT = 1024;
 
+/** Запас подписи под шапку анонса (приветствие, заголовок, игра, пометка «Тест»): остальное отдано ссылкам. */
+export const ANNOUNCE_HEAD_RESERVE = 300;
+
 /** Постоянные фразы на русском — язык по умолчанию. */
 export const GREETING = t(DEFAULT_LANGUAGE, 'announce.greeting');
 
@@ -64,9 +67,10 @@ function trimCustomText(text: string, budget: number): string {
 }
 
 /** Ссылки столбцом: по строке на площадку. */
-function linksBlock(links: ChannelLink[]): string {
+export function linksBlock(links: ChannelLink[]): string {
   return links
-    .map((link) => `▶️ <a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a>`)
+    // Кавычка в адресе закрыла бы атрибут href: адреса из списка пользователя произвольные.
+    .map((link) => `▶️ <a href="${escapeHtml(link.url).replace(/"/g, '&quot;')}">${escapeHtml(link.label)}</a>`)
     .join('\n');
 }
 
@@ -79,7 +83,13 @@ function titleBlock(icon: string, title: string, game?: string | null): string {
 export function renderAnnounce(input: AnnounceInput): string {
   const marker = input.marker ? `${escapeHtml(input.marker)}\n\n` : '';
   const head = `${marker}${t(input.language ?? DEFAULT_LANGUAGE, 'announce.greeting')}\n\n${titleBlock('🔴', input.title, input.game)}`;
-  const tailText = linksBlock(input.links);
+  // Страховка от переполнения: лишние ссылки отбрасываем с конца целиком, разметка не рвётся.
+  let shown = input.links;
+  while (shown.length > 1 && head.length + 2 + linksBlock(shown).length > CAPTION_LIMIT) {
+    shown = shown.slice(0, -1);
+  }
+  let tailText = linksBlock(shown);
+  if (tailText && head.length + 2 + tailText.length > CAPTION_LIMIT) tailText = '';
 
   const custom = input.customText?.trim();
   if (!custom) {
@@ -87,6 +97,7 @@ export function renderAnnounce(input: AnnounceInput): string {
   }
 
   // Бюджет врезки — то, что осталось от лимита после обязательных частей и двух пустых строк.
+  // Врезка сокращается раньше ссылок: ссылки режутся только когда не помещаются и без неё.
   const budget = CAPTION_LIMIT - head.length - tailText.length - 4;
   const trimmed = trimCustomText(escapeHtml(custom), budget);
   if (!trimmed) {

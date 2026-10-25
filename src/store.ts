@@ -1,3 +1,4 @@
+import { ANNOUNCE_HEAD_RESERVE, CAPTION_LIMIT, linksBlock } from './announceTemplate.js';
 import type { Db } from './db.js';
 import { isPlatform, LiveStream, Platform } from './types.js';
 
@@ -125,6 +126,75 @@ function toDelivery(row: RawDelivery): DeliveryRow {
 export const SETTING_ANNOUNCE_TEXT = 'announce_text';
 export const SETTING_UPDATES_OFFSET = 'updates_offset';
 export const SETTING_ANNOUNCE_PHOTO = 'announce_photo';
+export const SETTING_STATIC_LINKS = 'static_links';
+export const SETTING_LINKS_SNAPSHOT = 'announce_links_snapshot';
+
+/** Ссылка из списка пользователя; always — «всегда в анонсе». Порядок в списке = порядок в анонсе. */
+export interface StaticLink {
+  label: string;
+  url: string;
+  always: boolean;
+}
+
+/** Ссылки анонса, зафиксированные на первой доставке эфира; links = null — анонс шёл с живыми стримами. */
+export interface LinksSnapshot {
+  broadcastId: number;
+  links: Array<{ label: string; url: string }> | null;
+}
+
+export const MAX_STATIC_LINKS = 20;
+export const MAX_LINK_LABEL = 64;
+export const MAX_LINK_URL = 512;
+
+/** Ошибка проверки списка ссылок: key — ключ словаря, чтобы показать текст на языке запроса. */
+export class StaticLinksError extends Error {
+  constructor(
+    message: string,
+    readonly key: string,
+    readonly params?: Record<string, string | number>
+  ) {
+    super(message);
+  }
+}
+
+function isAbsoluteHttpUrl(value: string): boolean {
+  if (/\s/.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '';
+  } catch {
+    return false;
+  }
+}
+
+/** Проверяет весь список целиком: при любой ошибке бросает StaticLinksError, ничего не сохраняя. */
+export function validateStaticLinks(value: unknown): StaticLink[] {
+  if (!Array.isArray(value)) throw new StaticLinksError('Ожидается массив ссылок', 'server.links.notArray');
+  if (value.length > MAX_STATIC_LINKS) {
+    throw new StaticLinksError(`Ссылок не больше ${MAX_STATIC_LINKS}`, 'server.links.tooMany', { max: MAX_STATIC_LINKS });
+  }
+  return value.map((item, index): StaticLink => {
+    const n = index + 1;
+    if (!item || typeof item !== 'object') throw new StaticLinksError(`Ссылка ${n}: ожидается объект`, 'server.links.badItem', { n });
+    const { label, url, always } = item as Record<string, unknown>;
+    const cleanLabel = typeof label === 'string' ? label.trim() : '';
+    const cleanUrl = typeof url === 'string' ? url.trim() : '';
+    if (!cleanLabel) throw new StaticLinksError(`Ссылка ${n}: название не заполнено`, 'server.links.emptyLabel', { n });
+    if (cleanLabel.length > MAX_LINK_LABEL) {
+      throw new StaticLinksError(`Ссылка ${n}: название длиннее ${MAX_LINK_LABEL} символов`, 'server.links.longLabel', { n, max: MAX_LINK_LABEL });
+    }
+    if (cleanUrl.length > MAX_LINK_URL) {
+      throw new StaticLinksError(`Ссылка ${n}: адрес длиннее ${MAX_LINK_URL} символов`, 'server.links.longUrl', { n, max: MAX_LINK_URL });
+    }
+    if (!isAbsoluteHttpUrl(cleanUrl)) {
+      throw new StaticLinksError(`Ссылка ${n}: нужен полный адрес http:// или https://`, 'server.links.badUrl', { n });
+    }
+    if (always !== undefined && typeof always !== 'boolean') {
+      throw new StaticLinksError(`Ссылка ${n}: отметка «всегда в анонсе» должна быть true или false`, 'server.links.badAlways', { n });
+    }
+    return { label: cleanLabel, url: cleanUrl, always: always === true };
+  });
+}
 
 export class Store {
   constructor(private readonly db: Db) {}
@@ -299,6 +369,50 @@ export class Store {
 
   clearAnnouncePhoto(): void {
     this.deleteSetting(SETTING_ANNOUNCE_PHOTO);
+  }
+
+  /** Список ссылок пользователя в его порядке. Битая запись в базе читается как пустой список. */
+  staticLinks(): StaticLink[] {
+    const raw = this.getSetting(SETTING_STATIC_LINKS);
+    if (raw === null) return [];
+    try {
+      return validateStaticLinks(JSON.parse(raw));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Заменяет список целиком; при некорректных данных бросает StaticLinksError и не трогает сохранённое. */
+  setStaticLinks(value: unknown, now: number = Date.now()): StaticLink[] {
+    const links = validateStaticLinks(value);
+    // Размер проверяем только при сохранении: старый список в базе остаётся читаемым, а анонс подстрахован в renderAnnounce.
+    const always = links.filter((link) => link.always);
+    const maxBlock = CAPTION_LIMIT - ANNOUNCE_HEAD_RESERVE;
+    if (linksBlock(always).length > maxBlock) {
+      throw new StaticLinksError(`Отмеченные ссылки не помещаются в подпись (до ${maxBlock} символов)`, 'server.links.tooLong', { max: maxBlock });
+    }
+    this.setSetting(SETTING_STATIC_LINKS, JSON.stringify(links), now);
+    return links;
+  }
+
+  /** Отмеченные «всегда в анонсе» ссылки; если они есть, анонс берёт только их. */
+  alwaysLinks(): StaticLink[] {
+    return this.staticLinks().filter((link) => link.always);
+  }
+
+  linksSnapshot(broadcastId: number): LinksSnapshot | null {
+    const raw = this.getSetting(SETTING_LINKS_SNAPSHOT);
+    if (raw === null) return null;
+    try {
+      const snapshot = JSON.parse(raw) as LinksSnapshot;
+      return snapshot.broadcastId === broadcastId ? snapshot : null;
+    } catch {
+      return null;
+    }
+  }
+
+  setLinksSnapshot(snapshot: LinksSnapshot, now: number = Date.now()): void {
+    this.setSetting(SETTING_LINKS_SNAPSHOT, JSON.stringify(snapshot), now);
   }
 
   updatesOffset(): number | null {

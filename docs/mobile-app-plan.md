@@ -54,7 +54,7 @@
 
 ### 1. API для удалённых клиентов
 
-- Стабильная версия API `/api/v1/*` поверх существующих маршрутов `/api/*` из `src/web/server.ts`: статус (`GET /api/status`), проверка сейчас (`POST /api/probe`), тестовое сообщение (`POST /api/test-message`), тестовые анонсы (`POST /api/test-announce/telegram` и `/discord`), текст (`GET`/`PUT`/`DELETE /api/text`), картинка (`PUT`/`DELETE /api/image`, `GET /api/image/file`), предпросмотр (`GET /api/preview`), настройки (`GET`/`PUT /api/settings`), лог (`GET /api/logs`). Старые `/api/*` остаются для панели.
+- Стабильная версия API `/api/v1/*` поверх существующих маршрутов `/api/*` из `src/web/server.ts`: статус (`GET /api/status`), проверка сейчас (`POST /api/probe`), тестовое сообщение (`POST /api/test-message`), тестовые анонсы (`POST /api/test-announce/telegram` и `/discord`), текст (`GET`/`PUT`/`DELETE /api/text`), статические ссылки анонса (`GET`/`PUT /api/links`), картинка (`PUT`/`DELETE /api/image`, `GET /api/image/file`), предпросмотр (`GET /api/preview`), настройки (`GET`/`PUT /api/settings`), лог (`GET /api/logs`). Старые `/api/*` остаются для панели.
 - Описание контракта в `docs/api-v1.yaml` (OpenAPI).
 - Загрузка картинки из приложения идёт тем же путём, что из панели (`PUT /api/image`, логика хранения в `src/announceImage.ts`): картинка хранится локально и работает без Telegram. В личку админу она уходит, только если Telegram включён и задан админ. `/api/v1` использует тот же путь.
 - **Общие типы** запросов и ответов выносятся в пакет `shared/` не первым шагом, а когда появится `mobile/`. Требование: сборка десктопа (`npm run build:desktop`, список `files` в `electron-builder.yml`, упаковка в asar) не должна сломаться; до мержа проверить `npm run dist:mac` и `npm run dist:win`.

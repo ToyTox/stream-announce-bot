@@ -686,6 +686,55 @@ describe('панель: /api/v1', () => {
     expect(v1.json.photo).toBe('twitch');
   });
 
+  it('ссылки: GET и PUT работают как в панели, превью показывает отмеченные', async () => {
+    const links = [
+      { label: 'Kick', url: 'https://kick.com/me', always: true },
+      { label: 'Boosty', url: 'https://boosty.to/me', always: false },
+    ];
+
+    const put = await call('PUT', '/api/v1/links', { body: { links } });
+    const get = await call('GET', '/api/v1/links');
+    const preview = await call('GET', '/api/preview');
+
+    expect(put).toEqual({ status: 200, json: { links } });
+    expect(get).toEqual(await call('GET', '/api/links'));
+    expect(harness.store.staticLinks()).toEqual(links);
+    expect(preview.json.announce).toContain('<a href="https://kick.com/me">Kick</a>');
+    expect(preview.json.announce).not.toContain('Boosty');
+    expect(preview.json.announce).not.toContain('twitch.tv');
+    expect(preview.json.finished).not.toContain('kick.com');
+  });
+
+  it('ссылки: некорректный запрос отклоняется целиком и список не портится', async () => {
+    const good = [{ label: 'Kick', url: 'https://kick.com/me', always: true }];
+    await call('PUT', '/api/links', { body: { links: good } });
+
+    for (const links of [
+      [...good, { label: '', url: 'https://a.example', always: false }],
+      [...good, { label: 'x', url: 'javascript:alert(1)', always: false }],
+      [...good, { label: 'x', url: '/relative', always: false }],
+      'не список',
+    ]) {
+      const reply = await call('PUT', '/api/v1/links', { body: { links } });
+      expect(reply.status).toBe(400);
+      expect(typeof reply.json.error).toBe('string');
+    }
+
+    expect(harness.store.staticLinks()).toEqual(good);
+  });
+
+  it('ссылки: отмеченные ссылки, не помещающиеся в подпись, отклоняются, неотмеченные принимаются', async () => {
+    const big = (i: number, always: boolean) => ({ label: `L${i}`, url: `https://example.com/${i}/${'a'.repeat(300)}`, always });
+    const items = (always: boolean) => [0, 1, 2, 3].map((i) => big(i, always));
+
+    const rejected = await call('PUT', '/api/v1/links', { body: { links: items(true) } });
+    expect(rejected.status).toBe(400);
+    expect(typeof rejected.json.error).toBe('string');
+    expect(harness.store.staticLinks()).toEqual([]);
+
+    expect((await call('PUT', '/api/links', { body: { links: items(false) } })).status).toBe(200);
+  });
+
   it('картинка: загрузка уходит в личку, файл отдаётся, удаление сбрасывает', async () => {
     const put = await call('PUT', '/api/v1/image', {
       raw: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
@@ -911,6 +960,16 @@ describe('панель: Bearer для /api/v1', () => {
       expect(reply.status).toBe(401);
       expect(reply.json.error).toContain('токен');
     }
+    close();
+  });
+
+  it('/api/v1/links требует действующий токен', async () => {
+    const { devices, close } = registry();
+    const { token } = devices.issue('Pixel');
+
+    expect((await call('GET', '/api/v1/links', { headers: bearer('A'.repeat(43)) })).status).toBe(401);
+    expect((await call('PUT', '/api/v1/links', { body: { links: [] }, headers: bearer('A'.repeat(43)) })).status).toBe(401);
+    expect((await call('GET', '/api/v1/links', { headers: bearer(token) })).status).toBe(200);
     close();
   });
 
