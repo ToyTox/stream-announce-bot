@@ -178,17 +178,17 @@ The panel starts together with the bot — open **http://localhost:3210**. The l
 - The panel listens only on `127.0.0.1`: it is not reachable from the network or from a phone, and requests from other sites are rejected. There is no password — everything visible in the panel already lies in `.env` on this computer.
 - Saving the settings writes `.env` (comments are kept). At the start of each settings group there is a collapsed "How to get it" guide (works without internet), and a link to the README at the top.
 - The port is changed with `WEB_PORT`, the panel is turned off with `WEB_ENABLED=false`. In the desktop app the panel always works, and if the port is busy, a free one is taken.
-- There is a versioned `/api/v1` for external clients: `GET /api/v1/info` (API and app versions), `GET /api/v1/status` (bot status), `GET /api/v1/logs` (log, `after` parameter). Write and related read routes: `POST /api/v1/probe` (check now), `POST /api/v1/test-message`, `POST /api/v1/test-announce/telegram` and `/discord`, `GET`/`PUT`/`DELETE /api/v1/text`, `GET`/`PUT /api/v1/links` (static announcement links; `PUT` replaces the whole list, an invalid list is rejected with 400), `PUT`/`DELETE /api/v1/image` and `GET /api/v1/image/file`, `GET /api/v1/preview`, `GET`/`PUT /api/v1/settings` (settings; secrets are neither returned nor accepted: a request with a secret key is rejected); behavior and responses match the panel's `/api/*`. For now it is reachable only from localhost, like the panel. The `Authorization: Bearer <token>` header is optional on localhost, but if sent, the token is checked against the device registry in the database: an invalid, revoked or malformed token gets 401. Device tokens are stored only as a hash. The panel's `/api/*` routes do not use Bearer; the full contract description will appear in `docs/api-v1.yaml`.
+- There is a versioned `/api/v1` for external clients: `GET /api/v1/info` (API and app versions), `GET /api/v1/status` (bot status), `GET /api/v1/logs` (log, `after` parameter). Write and related read routes: `POST /api/v1/probe` (check now), `POST /api/v1/test-message`, `POST /api/v1/test-announce/telegram` and `/discord`, `GET`/`PUT`/`DELETE /api/v1/text`, `GET`/`PUT /api/v1/links` (static announcement links; `PUT` replaces the whole list, an invalid list is rejected with 400), `PUT`/`DELETE /api/v1/image` and `GET /api/v1/image/file`, `GET /api/v1/preview`, `GET`/`PUT /api/v1/settings` (settings; secrets have no value in the response, only an "is set" flag, and a request with a secret key is rejected with 400); behavior and responses match the panel's `/api/*`, and `GET /api/v1/info` exists only in v1. The Host and Origin checks are the same as the panel's (a foreign one gets 403). For now it is reachable only from localhost, like the panel. The `Authorization: Bearer <token>` header is optional on localhost, but if sent, the token is checked against the device registry in the database: an invalid, revoked or malformed token gets 401. Device tokens are stored only as a hash. The panel's `/api/*` routes do not use Bearer; the full contract description will appear in `docs/api-v1.yaml`.
 
 ## `.env` variables
 
 | Variable | Required | What it sets |
 |----------|----------|--------------|
-| `TELEGRAM_BOT_TOKEN` | yes | Bot token |
-| `TELEGRAM_CHAT_ID` | yes | Group for announcements |
-| `TELEGRAM_TOPIC_ID` | | Forum topic; empty — the main one |
-| `TELEGRAM_ADMIN_ID` | | Your user ID: commands in the private chat and preview upload from the panel |
-| `DISCORD_WEBHOOK_URL` | | Discord channel webhook: the announcement and the stream summary are duplicated there; empty — Discord is off |
+| `TELEGRAM_BOT_TOKEN` | yes, unless `DISCORD_WEBHOOK_URL` is set | Bot token; Telegram is enabled when both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set, only one of the two is an error |
+| `TELEGRAM_CHAT_ID` | yes, unless `DISCORD_WEBHOOK_URL` is set | Group for announcements |
+| `TELEGRAM_TOPIC_ID` | | Forum topic; empty — the main one. Ignored if Telegram is not enabled |
+| `TELEGRAM_ADMIN_ID` | | Your user ID: commands in the private chat and preview upload from the panel. Ignored if Telegram is not enabled |
+| `DISCORD_WEBHOOK_URL` | yes, unless Telegram is set | Discord channel webhook: the announcement and the stream summary are duplicated there (if Telegram is configured) or sent only there; empty — Discord is off |
 | `TWITCH_LOGIN`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | | Twitch — all three together |
 | `YOUTUBE_CHANNEL_ID` | | YouTube |
 | `YOUTUBE_API_KEY` | | Check YouTube through the Data API instead of the `/live` page |
@@ -205,7 +205,7 @@ The panel starts together with the bot — open **http://localhost:3210**. The l
 | `DATABASE_PATH` | | Database file (`./data/bot.db`) |
 | `WEB_ENABLED`, `WEB_PORT` | | Control panel (`true`, `3210`) |
 
-At least one platform is required. Default values are in parentheses.
+At least one delivery destination (Telegram or Discord) and at least one stream platform (Twitch, YouTube or VK Live) are required. Default values are in parentheses.
 
 ## Interface and announcement language
 
@@ -222,7 +222,7 @@ A new language is added by a dictionary file in `src/i18n/` (a copy of `en.ts` w
 
 - **The first platform noticed** opens the stream, but the announcement does not go out immediately: the bot waits 90 seconds (`ANNOUNCE_GRACE_MS`) for the other platforms to connect from OBS.
 - **One message** with links to all platforms that are live at the moment of sending.
-- **Static links**: in the panel ("Message" tab) the user keeps their own list of "name + URL" links, including platforms the bot does not track (Kick, Boosty), and marks which ones are "always in announcement". If at least one is marked, the announcement contains only the marked links in list order, and the set of running platforms is not used for links; with no marks everything works as described above. In this mode the announcement does not wait for `ANNOUNCE_GRACE_MS` when the primary platform is live (the title and game come from it); without it, it waits as usual. The links are fixed at the first delivery, like the text insert: editing the list during a stream does not change the retry for another channel. The list is stored in the `setting` table and managed through `GET`/`PUT /api/links` and `/api/v1/links`. The marked links together must fit in the Telegram caption with room left for the announcement header, otherwise `PUT` is rejected with 400; if an overlong block still gets into an announcement, `renderAnnounce` drops the extra links from the end. The stream summary and the `announced` event do not change.
+- **Static links**: in the panel ("Message" tab) the user keeps their own list of "name + URL" links, including platforms the bot does not track (Kick, Boosty), and marks which ones are "always in announcement". If at least one is marked, the announcement contains only the marked links in list order, and the set of running platforms is not used for links; with no marks everything works as described above. In this mode the announcement does not wait for `ANNOUNCE_GRACE_MS` when the primary platform is live (the title and game come from it); without it, it waits as usual. The links are fixed at the first delivery, like the text insert: editing the list during a stream does not change the retry for another channel. The list is stored in the `setting` table and managed through `GET`/`PUT /api/links` and `/api/v1/links`. The list holds up to 20 links, a name up to 64 characters, an address up to 512 characters, `http://` or `https://` only. The marked links together must fit in the Telegram caption with room left for the announcement header, otherwise `PUT` is rejected with 400; if an overlong block still gets into an announcement, `renderAnnounce` drops the extra links from the end. The stream summary and the `announced` event do not change.
 - **Title and game** are taken only from Twitch (`PRIMARY_PLATFORM`): they may differ on other platforms. If Twitch is not live, the title will be "Live stream" (in a Russian announcement, "Трансляция").
 - **Preview**: your own (from the private chat or the panel) if set, otherwise the Twitch preview. If there is neither, the announcement goes out as text.
 - **Telegram and Discord are independent**: each delivery platform has its own state in the database. A failure of one does not block the other and does not repeat what has already been delivered; an undelivered one is retried in the following checks while the stream is on. A permanent Discord error (webhook deleted or wrong: 400, 401, 403, 404) causes no retries. The stream summary goes only where the announcement arrived. A platform connected in the middle of a stream does not get a catch-up announcement.
@@ -272,6 +272,8 @@ In Discord the content of the messages is the same, but it is a card with Markdo
 | `src/discord/client.ts` | Discord webhook client |
 | `src/watchers/` | Twitch, YouTube, VK Live checks |
 | `src/telegram/` | Bot API client and commands in the private chat |
-| `src/store.ts`, `src/db.ts` | SQLite: streams, platforms, text and preview |
-| `src/web/` | Panel server, settings form, `.env` writing |
+| `src/store.ts`, `src/db.ts` | SQLite: streams, platforms, text and preview, static announcement links (`setting` table), the `device` table |
+| `src/devices.ts` | Mobile app device registry: token issuing, checking by SHA-256 hash, revoking |
+| `src/web/` | Panel server and `/api/v1` (including the Bearer check), settings form, `.env` writing |
+| `scripts/chapter-audit.mjs`, `scripts/chapter-audit-lib.mjs`, `.claude/agents/chapter-auditor.md` | Temporary development tool: audit of mobile app plan chapters (see "Chapter audit"), to be removed after the plan |
 | `web/index.html` | The panel page |
