@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.md)
 
-The bot watches Twitch, YouTube and VK Live and, when you start a stream, posts a single announcement with links to every platform you are live on to a Telegram group (and, if a webhook is configured, to a Discord channel). OBS starts the stream everywhere at once, so instead of several notifications you get one message. When the stream ends, the bot sends a separate message with the duration and links to the recordings.
+The bot watches Twitch, YouTube and VK Live and, when you start a stream, posts a single announcement with links to every platform you are live on to a Telegram group and/or a Discord channel. OBS starts the stream everywhere at once, so instead of several notifications you get one message. When the stream ends, the bot sends a separate message with the duration and links to the recordings.
 
 You can manage the bot from the app window or with commands in a private chat on Telegram. Discord has no commands: it only receives messages. Telegram is optional if a Discord webhook is set: then the bot announces only to Discord and is managed through the panel.
 
@@ -38,14 +38,14 @@ The Telegram block (steps 1–5) is optional if `DISCORD_WEBHOOK_URL` is set (st
 9. **Discord** (optional if Telegram is configured): Server Settings → Integrations → Webhooks → New Webhook → choose the channel → "Copy Webhook URL". An address like `https://discord.com/api/webhooks/<id>/<token>` is `DISCORD_WEBHOOK_URL`. The address contains a token: do not show it to anyone.
 10. **Check**: on the "Status" tab click "Connection check": the test goes to every configured destination and the result is shown for each.
 
-Enter the values on the "Settings" tab of the panel; at least one platform is required. Each group there also has a collapsed "How to get it" guide.
+Enter the values on the "Settings" tab of the panel. The minimum to start: one delivery destination (Telegram or Discord) and one stream platform (Twitch, YouTube or VK Live). Each group there also has a collapsed "How to get it" guide.
 
 ## Control panel
 
 | Tab | What is there |
 |-----|---------------|
 | Status | Whether you are live, whether the announcement was sent (with a link to the message), the state of each platform and check errors. The "Check now", "Connection check", "Test announcement to Telegram" and "Test announcement to Discord" buttons (a real announcement marked "🧪 Test" sent only to the chosen platform; silent in Telegram); buttons of destinations that are not configured are hidden |
-| Message | The text for the announcement (like `/text`), your own preview — uploading an image from the computer, a preview of the announcement and of the stream-ended message |
+| Message | The text for the announcement (like `/text`), your own list of links (including platforms the bot does not track; links marked "always in the announcement" replace the links to the platforms that are live), your own preview — uploading an image from the computer, a preview of the announcement and of the stream-ended message |
 | Settings | All parameters as a form. Secrets are shown masked, an empty field means "do not change". Saving validates the values and restarts the bot without a repeated announcement. The "Import .env…" button replaces the settings with a whole file |
 | Log | The last 300 lines of what the bot writes |
 
@@ -107,7 +107,7 @@ Thanks to everyone who dropped by the stream, you can watch the replay here:
 ▶️ VK Live
 ```
 
-The platform name is a clickable link. In Discord the content is the same, but it is a card. The announcement contains the platforms that were live at the moment of sending, the summary — all configured channels. The 🎮 line is absent if no category is chosen on Twitch; the line with the text is absent if it is not set. The announcement does not go out immediately but 90 seconds after the first platform, to wait for the others. The title and game are taken from Twitch, the preview is your own (if set) or the Twitch one. Discord gets the same picture: your own, otherwise the Twitch preview, otherwise text only. The detailed rules are in the [developer document](docs/development.en.md).
+The platform name is a clickable link. In Discord the content is the same, but it is a card. The announcement contains the platforms that were live at the moment of sending, the summary — all configured channels. If links are marked "always in the announcement" on the "Message" tab, only they go into the announcement, in list order, regardless of where you are live. They do not change the stream end or the summary. The marked links together must fit into the Telegram caption (about 700 characters with markup), otherwise the panel will not save the list. The 🎮 line is absent if no category is chosen on Twitch; the line with the text is absent if it is not set. The announcement does not go out immediately but 90 seconds after the first platform, to wait for the others; with marked links there is no need to wait for the others, so the announcement goes out as soon as the platform that the title and game are taken from (Twitch) is live, and without it — after the same 90 seconds. The title and game are taken from Twitch, the preview is your own (if set) or the Twitch one. Discord gets the same picture: your own, otherwise the Twitch preview, otherwise text only. The detailed rules are in the [developer document](docs/development.en.md).
 
 ## Updates and data
 
@@ -115,7 +115,7 @@ Once a day the app checks the latest release on GitHub; if there is a newer one,
 
 The data lives in `~/Library/Application Support/Анонсы стримов/` on Mac and `%APPDATA%\Анонсы стримов\` on Windows: the `.env` and `bot.db` files. On Windows the data is stored separately for each user, so run the bot under a single account.
 
-**Run the bot in only one place — on Mac or on Windows.** Two copies with the same Telegram token will send the announcement twice and steal each other's commands.
+**Run the bot in only one place — on Mac or on Windows.** Two copies will send the announcement twice (to Telegram with the same token and to Discord with the same webhook), and with Telegram they will also steal each other's commands.
 
 ## For developers
 
