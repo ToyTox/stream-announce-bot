@@ -1000,3 +1000,102 @@ describe('панель: Bearer для /api/v1', () => {
     expect(reply.status).toBe(401);
   });
 });
+
+describe('панель: сопряжение устройства', () => {
+  function registry(): { devices: DeviceStore; close(): void } {
+    env.DATABASE_PATH = join(dir, 'bot.db');
+    const db = openDb(env.DATABASE_PATH);
+    return { devices: new DeviceStore(db), close: () => db.close() };
+  }
+  const pair = (code: unknown, name: unknown = 'Pixel', headers: Record<string, string> = {}) =>
+    call('POST', '/api/v1/pair', { body: { code, name }, headers });
+
+  it('код из панели меняется на токен, с которым работает /api/v1', async () => {
+    const { devices, close } = registry();
+
+    const issued = await call('POST', '/api/pairing', { body: {} });
+    const paired = await pair(issued.json.code, ' Pixel ');
+    const info = await call('GET', '/api/v1/info', { headers: { authorization: `Bearer ${paired.json.token}` } });
+
+    expect(issued.status).toBe(200);
+    expect(issued.json.expiresAt).toBeGreaterThan(Date.now());
+    expect(paired.status).toBe(200);
+    expect(paired.json.device).toMatchObject({ name: 'Pixel', revokedAt: null });
+    expect(JSON.stringify(paired.json)).not.toContain('hash');
+    expect(info.status).toBe(200);
+    expect(devices.list()).toHaveLength(1);
+    close();
+  });
+
+  it('повторный обмен того же кода и неверный код дают одинаковый 401', async () => {
+    const { devices, close } = registry();
+    const issued = await call('POST', '/api/pairing', { body: {} });
+    await pair(issued.json.code);
+
+    const again = await pair(issued.json.code);
+    const wrong = await pair('A'.repeat(22));
+    const short = await pair('x');
+
+    expect(again.status).toBe(401);
+    expect(wrong).toEqual(again);
+    expect(short).toEqual(again);
+    expect(devices.list()).toHaveLength(1);
+    close();
+  });
+
+  it('невалидное имя и тело дают 400 и не гасят код', async () => {
+    const { devices, close } = registry();
+    const issued = await call('POST', '/api/pairing', { body: {} });
+
+    expect((await pair(issued.json.code, '')).status).toBe(400);
+    expect((await pair(issued.json.code, '   ')).status).toBe(400);
+    expect((await pair(issued.json.code, 'x'.repeat(65))).status).toBe(400);
+    expect((await pair(issued.json.code, 42)).status).toBe(400);
+    expect((await pair(undefined)).status).toBe(400);
+    expect((await call('POST', '/api/v1/pair', { raw: Buffer.from('{'), headers: { 'content-type': 'application/json' } })).status).toBe(400);
+    expect(devices.list()).toHaveLength(0);
+    expect((await pair(issued.json.code)).status).toBe(200);
+    close();
+  });
+
+  it('новый код аннулирует прежний', async () => {
+    registry().close();
+    const first = await call('POST', '/api/pairing', { body: {} });
+    const second = await call('POST', '/api/pairing', { body: {} });
+
+    expect((await pair(first.json.code)).status).toBe(401);
+    expect((await pair(second.json.code)).status).toBe(200);
+  });
+
+  it('/api/v1/pair проходит без Bearer, а с чужим Bearer не проверяет его', async () => {
+    const { close } = registry();
+    const issued = await call('POST', '/api/pairing', { body: {} });
+
+    const reply = await pair(issued.json.code, 'Pixel', { authorization: 'Bearer garbage' });
+
+    expect(reply.status).toBe(200);
+    close();
+  });
+
+  it('/api/pairing есть только у панели', async () => {
+    expect((await call('POST', '/api/v1/pairing', { body: {} })).status).toBe(404);
+  });
+
+  it('чужой Host у обоих маршрутов даёт 403', async () => {
+    registry().close();
+    const headers = { host: `evil.example:${port}` };
+
+    expect((await call('POST', '/api/pairing', { body: {}, headers })).status).toBe(403);
+    expect((await pair('A'.repeat(22), 'Pixel', headers)).status).toBe(403);
+  });
+
+  it('если базу не открыть, оба маршрута отвечают 503', async () => {
+    env.DATABASE_PATH = join(dir, 'нет', '\0', 'bot.db');
+
+    const issued = await call('POST', '/api/pairing', { body: {} });
+    const paired = await pair('A'.repeat(22));
+
+    expect(issued.status).toBe(503);
+    expect(paired.status).toBe(503);
+  });
+});

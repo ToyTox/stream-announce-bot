@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDb, type Db } from '../../src/db.js';
-import { DeviceStore } from '../../src/devices.js';
+import { DeviceStore, PAIRING_MAX_FAILURES, PAIRING_TTL_MS, PairingCodes } from '../../src/devices.js';
 
 let dir: string;
 let db: Db;
@@ -81,5 +81,58 @@ describe('устройства', () => {
     expect(new DeviceStore(migrated).list()).toEqual([]);
     expect(migrated.prepare('SELECT value FROM setting').get()).toEqual({ value: 'врезка' });
     migrated.close();
+  });
+});
+
+describe('коды сопряжения', () => {
+  it('код стойкий и подходит один раз', () => {
+    const codes = new PairingCodes();
+    const { code, expiresAt } = codes.issue(1000);
+
+    expect(code).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(expiresAt).toBe(1000 + PAIRING_TTL_MS);
+    expect(codes.redeem(code, 2000)).toBe(true);
+    expect(codes.redeem(code, 2001)).toBe(false);
+  });
+
+  it('действует 5 минут', () => {
+    const codes = new PairingCodes();
+    const { code } = codes.issue(1000);
+
+    expect(codes.redeem(code, 1000 + PAIRING_TTL_MS)).toBe(false);
+    const fresh = codes.issue(1000);
+    expect(codes.redeem(fresh.code, 1000 + PAIRING_TTL_MS - 1)).toBe(true);
+  });
+
+  it('новый код аннулирует предыдущий', () => {
+    const codes = new PairingCodes();
+    const old = codes.issue(1000);
+    const fresh = codes.issue(1000);
+
+    expect(old.code).not.toBe(fresh.code);
+    expect(codes.redeem(old.code, 1001)).toBe(false);
+    expect(codes.redeem(fresh.code, 1002)).toBe(true);
+  });
+
+  it('серия неверных попыток аннулирует действующий код', () => {
+    const codes = new PairingCodes();
+    const { code } = codes.issue(1000);
+
+    for (let i = 0; i < PAIRING_MAX_FAILURES; i++) expect(codes.redeem('A'.repeat(22), 1001)).toBe(false);
+
+    expect(codes.redeem(code, 1002)).toBe(false);
+  });
+
+  it('меньше допустимого числа неверных попыток код не аннулирует', () => {
+    const codes = new PairingCodes();
+    const { code } = codes.issue(1000);
+
+    for (let i = 0; i < PAIRING_MAX_FAILURES - 1; i++) codes.redeem('bad', 1001);
+
+    expect(codes.redeem(code, 1002)).toBe(true);
+  });
+
+  it('без выпущенного кода обмен не проходит', () => {
+    expect(new PairingCodes().redeem('A'.repeat(22))).toBe(false);
   });
 });
