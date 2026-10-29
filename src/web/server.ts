@@ -9,7 +9,7 @@ import { channelUrl } from '../announcer.js';
 import type { Bot } from '../bot.js';
 import { ConfigError, loadConfig, type Env } from '../config.js';
 import { openDb, type Db } from '../db.js';
-import { DeviceStore } from '../devices.js';
+import { DeviceStore, PairingCodes } from '../devices.js';
 import {
   announceLanguageFromEnv,
   languageFromEnv,
@@ -73,6 +73,8 @@ function findIndexHtml(): string {
 const INDEX_HTML = findIndexHtml();
 /** Версия контракта /api/v1: растёт только при несовместимых изменениях. */
 const API_VERSION = 1;
+/** Имя устройства при сопряжении: не длиннее. */
+const DEVICE_NAME_MAX = 64;
 const JSON_LIMIT = 64 * 1024;
 /** Лимит Telegram на фото. */
 const IMAGE_LIMIT = 10 * 1024 * 1024;
@@ -206,6 +208,9 @@ export function createPanel(deps: PanelDeps): Panel {
     return new DeviceStore(devicesDb.db);
   }
 
+  // Коды сопряжения только в памяти: перезапуск их аннулирует.
+  const pairing = new PairingCodes();
+
   /**
    * Проверка Bearer для /api/v1/*. Токен в заголовке должен быть действующим.
    * Без заголовка запрос с localhost проходит; для остальных адресов обязательный токен появится в задаче 9.
@@ -283,6 +288,24 @@ export function createPanel(deps: PanelDeps): Panel {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
         res.end(html);
         return;
+      }
+
+      case 'POST /api/pairing': {
+        if (!devices()) throw HttpError.localized(503, 'server.pairing.noRegistry');
+        return sendJson(res, 200, pairing.issue());
+      }
+
+      case 'POST /api/v1/pair': {
+        const body = await readJson(req);
+        if (typeof body.code !== 'string' || typeof body.name !== 'string') throw HttpError.localized(400, 'server.pairing.badBody');
+        const name = body.name.trim();
+        if (name === '') throw HttpError.localized(400, 'server.pairing.emptyName');
+        if (name.length > DEVICE_NAME_MAX) throw HttpError.localized(400, 'server.pairing.longName', { max: DEVICE_NAME_MAX });
+        const store = devices();
+        if (!store) throw HttpError.localized(503, 'server.pairing.noRegistry');
+        // Неверный, просроченный и уже использованный код неразличимы в ответе.
+        if (!pairing.redeem(body.code)) throw HttpError.localized(401, 'server.pairing.badCode');
+        return sendJson(res, 200, store.issue(name));
       }
 
       case 'GET /api/v1/info':
@@ -526,7 +549,7 @@ export function createPanel(deps: PanelDeps): Panel {
         const port = (server.address() as AddressInfo).port;
         checkTrusted(req, port);
         const url = new URL(req.url ?? '/', `http://localhost:${port}`);
-        if (url.pathname.startsWith('/api/v1/')) checkBearer(req);
+        if (url.pathname.startsWith('/api/v1/') && !(req.method === 'POST' && url.pathname === '/api/v1/pair')) checkBearer(req);
         await route(req, res, url, lang);
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;

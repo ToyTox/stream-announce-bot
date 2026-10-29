@@ -82,3 +82,46 @@ export class DeviceStore {
     this.db.prepare('UPDATE device SET last_used_at = ? WHERE id = ?').run(now, id);
   }
 }
+
+/** Код сопряжения живёт 5 минут. */
+export const PAIRING_TTL_MS = 5 * 60 * 1000;
+/** Столько неверных обменов подряд аннулируют действующий код. */
+export const PAIRING_MAX_FAILURES = 5;
+
+/** 16 случайных байт (128 бит) в base64url. */
+const PAIRING_CODE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+
+/**
+ * Одноразовый код сопряжения приложения с ботом. Хранится в памяти (перезапуск аннулирует),
+ * действует только один код: новый заменяет прежний. Передаётся через QR, вручную не вводится.
+ */
+export class PairingCodes {
+  private active: { hash: string; expiresAt: number; failures: number } | undefined;
+
+  /** Выпускает новый код, аннулируя прежний. */
+  issue(now = Date.now()): { code: string; expiresAt: number } {
+    const code = randomBytes(16).toString('base64url');
+    const expiresAt = now + PAIRING_TTL_MS;
+    this.active = { hash: hashToken(code), expiresAt, failures: 0 };
+    return { code, expiresAt };
+  }
+
+  /** Погашает код: true только для действующего кода, повторно тот же код уже не подходит. */
+  redeem(code: string, now = Date.now()): boolean {
+    const active = this.active;
+    if (!active) return false;
+    if (now >= active.expiresAt) {
+      this.active = undefined;
+      return false;
+    }
+    const hash = hashToken(code);
+    // Хэши равной длины; сравнение без утечек по времени.
+    if (PAIRING_CODE_PATTERN.test(code) && timingSafeEqual(Buffer.from(active.hash), Buffer.from(hash))) {
+      this.active = undefined;
+      return true;
+    }
+    active.failures += 1;
+    if (active.failures >= PAIRING_MAX_FAILURES) this.active = undefined;
+    return false;
+  }
+}
