@@ -1099,3 +1099,66 @@ describe('панель: сопряжение устройства', () => {
     expect(paired.status).toBe(503);
   });
 });
+
+describe('панель: список и отзыв устройств', () => {
+  function registry() {
+    env.DATABASE_PATH = join(dir, 'devices.db');
+    return openDb(env.DATABASE_PATH);
+  }
+
+  it('без запущенного бота отдаёт только публичные поля и отзывает прежний Bearer', async () => {
+    runtime.bot = null;
+    const db = registry();
+    const store = new DeviceStore(db);
+    const issued = store.issue('<img src=x onerror=alert(1)>');
+    db.close();
+
+    const list = await call('GET', '/api/devices');
+    expect(list.status).toBe(200);
+    expect(list.json).toEqual({ devices: [issued.device] });
+    expect(JSON.stringify(list.json)).not.toMatch(/token|hash/i);
+    const headers = { authorization: `Bearer ${issued.token}` };
+    expect((await call('GET', '/api/v1/info', { headers })).status).toBe(200);
+    expect((await call('POST', '/api/devices/revoke', { body: { id: issued.device.id } })).status).toBe(200);
+    expect((await call('GET', '/api/v1/info', { headers })).status).toBe(401);
+    expect((await call('GET', '/api/devices')).json.devices[0].revokedAt).toEqual(expect.any(Number));
+    expect((await call('POST', '/api/devices/revoke', { body: { id: issued.device.id } })).status).toBe(404);
+  });
+
+  it('пустой список, некорректный и неизвестный идентификаторы', async () => {
+    registry().close();
+    expect((await call('GET', '/api/devices')).json).toEqual({ devices: [] });
+    for (const id of [undefined, null, '1', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect((await call('POST', '/api/devices/revoke', { body: { id } })).status).toBe(400);
+    }
+    expect((await call('POST', '/api/devices/revoke', { body: { id: 999 } })).status).toBe(404);
+    expect((await call('POST', '/api/devices/revoke', { raw: Buffer.from('{'), headers: { 'content-type': 'application/json' } })).status).toBe(400);
+    expect((await call('POST', '/api/devices/revoke', { raw: Buffer.from('{}') })).status).toBe(415);
+  });
+
+  it('сохраняет Host/Origin и не открывает управление через v1', async () => {
+    registry().close();
+    for (const headers of [{ host: `evil.example:${port}` }, { origin: 'https://evil.example' }] as Record<string, string>[]) {
+      expect((await call('GET', '/api/devices', { headers })).status).toBe(403);
+      expect((await call('POST', '/api/devices/revoke', { headers, body: { id: 1 } })).status).toBe(403);
+      expect((await call('GET', '/api/pairing', { headers })).status).toBe(403);
+    }
+    expect((await call('GET', '/api/v1/devices')).status).toBe(404);
+    expect((await call('POST', '/api/v1/devices/revoke', { body: { id: 1 } })).status).toBe(404);
+    expect((await call('GET', '/api/v1/pairing')).status).toBe(404);
+  });
+
+  it('недоступная база даёт 503 без ложного отзыва', async () => {
+    env.DATABASE_PATH = join(dir, '\0', 'bot.db');
+    expect((await call('GET', '/api/devices')).status).toBe(503);
+    expect((await call('POST', '/api/devices/revoke', { body: { id: 1 } })).status).toBe(503);
+  });
+
+  it('в текущем приложении сопряжение недоступно и ручной выпуск не содержит адреса или QR', async () => {
+    registry().close();
+    expect((await call('GET', '/api/pairing')).json).toEqual({ available: false });
+    const issued = await call('POST', '/api/pairing', { body: {} });
+    expect(issued.status).toBe(200);
+    expect(Object.keys(issued.json).sort()).toEqual(['code', 'expiresAt']);
+  });
+});

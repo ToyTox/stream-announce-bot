@@ -26,6 +26,7 @@ import { StaticLinksError } from '../store.js';
 import { TelegramError } from '../telegram/client.js';
 import { PLATFORMS, PLATFORM_LABELS } from '../types.js';
 import { replaceEnvFile, writeEnvFile } from './envFile.js';
+import { pairingApiAddress, pairingQr } from './pairingQr.js';
 import { hasSecretKey, settingGuides, settingsChanges, settingsView, settingsViewV1 } from './settings.js';
 
 /**
@@ -50,6 +51,8 @@ export interface PanelDeps {
   defaults?: Env;
   /** Версия приложения для шапки панели. */
   version?: string;
+  /** Доверенный адрес удалённого транспорта. До задачи 9 production его не передаёт. */
+  pairingApiUrl?: () => string | undefined;
 }
 
 export interface Panel {
@@ -292,7 +295,40 @@ export function createPanel(deps: PanelDeps): Panel {
 
       case 'POST /api/pairing': {
         if (!devices()) throw HttpError.localized(503, 'server.pairing.noRegistry');
-        return sendJson(res, 200, pairing.issue());
+        const issued = pairing.issue();
+        const apiUrl = pairingApiAddress(deps.pairingApiUrl?.());
+        const qrDataUrl = await pairingQr(apiUrl, issued);
+        return sendJson(res, 200, { ...issued, ...(qrDataUrl ? { apiUrl, qrDataUrl } : {}) });
+      }
+
+      case 'GET /api/pairing':
+        return sendJson(res, 200, { available: pairingApiAddress(deps.pairingApiUrl?.()) !== undefined });
+
+      case 'GET /api/devices': {
+        try {
+          const store = devices();
+          if (!store) throw new Error();
+          return sendJson(res, 200, { devices: store.list() });
+        } catch {
+          throw HttpError.localized(503, 'server.pairing.noRegistry');
+        }
+      }
+
+      case 'POST /api/devices/revoke': {
+        const body = await readJson(req);
+        if (typeof body.id !== 'number' || !Number.isSafeInteger(body.id) || body.id <= 0) {
+          throw HttpError.localized(400, 'server.devices.badId');
+        }
+        let revoked: boolean;
+        try {
+          const store = devices();
+          if (!store) throw new Error();
+          revoked = store.revoke(body.id);
+        } catch {
+          throw HttpError.localized(503, 'server.pairing.noRegistry');
+        }
+        if (!revoked) throw HttpError.localized(404, 'server.devices.notActive');
+        return sendJson(res, 200, { ok: true });
       }
 
       case 'POST /api/v1/pair': {
