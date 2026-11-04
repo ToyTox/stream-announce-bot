@@ -82,6 +82,27 @@ const JSON_LIMIT = 64 * 1024;
 /** Лимит Telegram на фото. */
 const IMAGE_LIMIT = 10 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const RATE_WINDOW_MS = 60 * 1000;
+const RATE_MAX_KEYS = 4096;
+
+/** Общее минутное окно; действующие записи не вытесняются при заполнении памяти. */
+function rateLimit(max: number): (key: string) => number | undefined {
+  const counts = new Map<string, number>();
+  let expiresAt = 0;
+  return (key) => {
+    const now = Date.now();
+    if (now >= expiresAt) {
+      counts.clear();
+      expiresAt = now + RATE_WINDOW_MS;
+    }
+    const count = counts.get(key) ?? 0;
+    if (count >= max || (!counts.has(key) && counts.size >= RATE_MAX_KEYS)) {
+      return Math.max(1, Math.ceil((expiresAt - now) / 1000));
+    }
+    counts.set(key, count + 1);
+    return undefined;
+  };
+}
 
 class HttpError extends Error {
   constructor(
@@ -147,11 +168,6 @@ function checkTrusted(req: IncomingMessage, port: number): void {
   if (origin !== undefined && !allowedHosts.some((allowed) => origin === `http://${allowed}`)) {
     throw HttpError.localized(403, 'server.forbiddenOrigin');
   }
-
-  const type = req.headers['content-type'] ?? '';
-  if (req.method === 'POST' && !type.startsWith('application/json')) {
-    throw HttpError.localized(415, 'server.jsonExpected');
-  }
 }
 
 /** Токен из заголовка Authorization: undefined, если заголовка нет; пустая строка, если он не Bearer. */
@@ -213,12 +229,15 @@ export function createPanel(deps: PanelDeps): Panel {
 
   // Коды сопряжения только в памяти: перезапуск их аннулирует.
   const pairing = new PairingCodes();
+  const deviceRate = rateLimit(120);
+  const addressRate = rateLimit(60);
+  const pairingRate = rateLimit(10);
 
   /**
    * Проверка Bearer для /api/v1/*. Токен в заголовке должен быть действующим.
    * Без заголовка запрос с localhost проходит; для остальных адресов обязательный токен появится в задаче 9.
    */
-  function checkBearer(req: IncomingMessage): void {
+  function checkBearer(req: IncomingMessage): { store: DeviceStore; id: number; key: string } | undefined {
     const token = bearerToken(req);
     if (token === undefined) {
       if (isLocalRequest(req)) return;
@@ -227,7 +246,7 @@ export function createPanel(deps: PanelDeps): Panel {
     const store = devices();
     const device = store?.findByToken(token);
     if (!store || !device) throw HttpError.localized(401, 'server.unauthorized');
-    store.touch(device.id);
+    return { store, id: device.id, key: `${devicesDb!.path}:${device.id}` };
   }
 
   function status(lang: Lang) {
@@ -585,7 +604,32 @@ export function createPanel(deps: PanelDeps): Panel {
         const port = (server.address() as AddressInfo).port;
         checkTrusted(req, port);
         const url = new URL(req.url ?? '/', `http://localhost:${port}`);
-        if (url.pathname.startsWith('/api/v1/') && !(req.method === 'POST' && url.pathname === '/api/v1/pair')) checkBearer(req);
+        if (url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/')) {
+          const address = req.socket.remoteAddress ?? '';
+          let retryAfter: number | undefined;
+          let identity: ReturnType<typeof checkBearer>;
+          let authError: unknown;
+          if (req.method === 'POST' && url.pathname === '/api/v1/pair') {
+            retryAfter = pairingRate(address);
+          } else {
+            try {
+              identity = checkBearer(req);
+            } catch (error) {
+              authError = error;
+            }
+            retryAfter = identity ? deviceRate(identity.key) : addressRate(address);
+          }
+          if (retryAfter !== undefined) {
+            res.setHeader('Retry-After', retryAfter);
+            throw HttpError.localized(429, 'server.rateLimit');
+          }
+          if (authError) throw authError;
+          identity?.store.touch(identity.id);
+        }
+        const type = req.headers['content-type'] ?? '';
+        if (req.method === 'POST' && !type.startsWith('application/json')) {
+          throw HttpError.localized(415, 'server.jsonExpected');
+        }
         await route(req, res, url, lang);
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;

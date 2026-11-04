@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { request } from 'node:http';
+import { request, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,7 +34,7 @@ interface Reply {
 function call(
   method: string,
   path: string,
-  options: { body?: unknown; raw?: Buffer; headers?: Record<string, string> } = {}
+  options: { body?: unknown; raw?: Buffer; headers?: Record<string, string>; responseHeaders?: IncomingHttpHeaders } = {}
 ): Promise<Reply> {
   const headers: Record<string, string> = { ...options.headers };
   let payload: Buffer | undefined = options.raw;
@@ -44,6 +44,7 @@ function call(
   }
   return new Promise((resolve, reject) => {
     const req = request({ host: '127.0.0.1', port, method, path, headers }, (res) => {
+      if (options.responseHeaders) Object.assign(options.responseHeaders, res.headers);
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
       res.on('end', () => {
@@ -998,6 +999,222 @@ describe('панель: Bearer для /api/v1', () => {
     const reply = await call('GET', '/api/v1/info', { headers: bearer('A'.repeat(43)) });
 
     expect(reply.status).toBe(401);
+  });
+});
+
+describe('панель: ограничение частоты /api/v1', () => {
+  const now = 1_800_000_000_000;
+  let clock: ReturnType<typeof vi.spyOn>;
+  const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+
+  beforeEach(() => {
+    clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    env.DATABASE_PATH = join(dir, 'devices.db');
+  });
+
+  async function fill(count: number, headers: Record<string, string> = {}) {
+    for (let i = 0; i < count; i++) {
+      expect((await call('GET', '/api/v1/info', { headers })).status).toBe(200);
+    }
+  }
+
+  it('localhost: граница 60, JSON, языки, Retry-After и восстановление без ожидания', async () => {
+    await fill(60);
+    const responseHeaders: IncomingHttpHeaders = {};
+    const ru = await call('GET', '/api/v1/info', { responseHeaders });
+    expect(ru).toEqual({ status: 429, json: { error: 'Слишком много запросов. Повторите позже' } });
+    expect(responseHeaders['content-type']).toBe('application/json; charset=utf-8');
+    expect(responseHeaders['cache-control']).toBe('no-store');
+    expect(responseHeaders['retry-after']).toBe('60');
+
+    clock.mockReturnValue(now + 59_001);
+    const en = await call('GET', '/api/v1/info', { headers: { 'accept-language': 'en-US' }, responseHeaders });
+    expect(en).toEqual({ status: 429, json: { error: 'Too many requests. Try again later' } });
+    expect(responseHeaders['retry-after']).toBe('1');
+    env.APP_LANGUAGE = 'ru';
+    expect((await call('GET', '/api/v1/info', { headers: { 'accept-language': 'en' } })).json).toEqual(ru.json);
+
+    clock.mockReturnValue(now + 60_000);
+    expect((await call('GET', '/api/v1/info', { responseHeaders: {} })).status).toBe(200);
+  });
+
+  it('пути, методы, query и ошибки используют общую квоту', async () => {
+    for (let i = 0; i < 60; i++) {
+      const replies = [
+        () => call('GET', `/api/v1/info?n=${i}`),
+        () => call('GET', `/api/v1/missing-${i}`),
+        () => call('OPTIONS', '/api/v1/status'),
+        () => call('GET', '/api/v1'),
+        () => call('POST', '/api/v1/probe'),
+        () => call('PUT', '/api/v1/text', { raw: Buffer.from('{') }),
+      ];
+      expect((await replies[i % replies.length]!()).status).toBe([200, 404, 404, 404, 415, 400][i % replies.length]);
+    }
+    for (const path of ['/api/v1', '/api/v1/', '/api/v1/info?new=query', '/api/v1/another']) {
+      expect((await call('GET', path)).status).toBe(429);
+    }
+    expect((await call('POST', '/api/v1/probe')).status).toBe(429);
+  });
+
+  it('одновременные запросы не превышают квоту', async () => {
+    const replies = await Promise.all(Array.from({ length: 65 }, () => call('GET', '/api/v1/info')));
+    expect(replies.filter((reply) => reply.status === 200)).toHaveLength(60);
+    expect(replies.filter((reply) => reply.status === 429)).toHaveLength(5);
+  });
+
+  it('429 не выполняет запись, отправку и проверку площадок и не ждёт тело', async () => {
+    harness.store.setAnnounceText('Исходный текст');
+    const beforeEnv = readFileSync(envPath, 'utf8');
+    const tick = vi.spyOn(runtime.bot!, 'tickNow');
+    const announce = vi.spyOn(harness.announcer, 'testAnnounce');
+    const clearImage = vi.spyOn(harness.image, 'clear');
+    await fill(60);
+    for (const [method, path, body] of [
+      ['PUT', '/api/v1/text', { text: 'Замена' }],
+      ['DELETE', '/api/v1/text', undefined],
+      ['PUT', '/api/v1/links', { links: [] }],
+      ['DELETE', '/api/v1/image', undefined],
+      ['PUT', '/api/v1/settings', { values: { VKVIDEO_REPLAY_URL: 'https://vkvideo.ru/@other' } }],
+      ['POST', '/api/v1/probe', {}],
+      ['POST', '/api/v1/test-message', {}],
+      ['POST', '/api/v1/test-announce/telegram', {}],
+    ] as const) {
+      expect((await call(method, path, { body })).status).toBe(429);
+    }
+    expect((await call('PUT', '/api/v1/image', { raw: Buffer.from([1]), headers: { 'content-type': 'image/png' } })).status).toBe(429);
+    const unread = await new Promise<number>((resolve, reject) => {
+      const req = request({
+        host: '127.0.0.1', port, method: 'PUT', path: '/api/v1/text',
+        headers: { 'content-type': 'application/json', 'content-length': '1000' },
+      }, (res) => {
+        res.resume();
+        res.on('end', () => { req.destroy(); resolve(res.statusCode ?? 0); });
+      });
+      req.on('error', reject);
+      req.flushHeaders();
+    });
+    expect(unread).toBe(429);
+    expect(harness.store.announceText()).toBe('Исходный текст');
+    expect(harness.store.staticLinks()).toEqual([]);
+    expect(harness.image.has()).toBe(false);
+    expect(clearImage).not.toHaveBeenCalled();
+    expect(readFileSync(envPath, 'utf8')).toBe(beforeEnv);
+    expect(runtime.restart).not.toHaveBeenCalled();
+    expect(tick).not.toHaveBeenCalled();
+    expect(announce).not.toHaveBeenCalled();
+    expect(harness.telegram.sendMessage).not.toHaveBeenCalled();
+    expect(harness.telegram.uploadPhoto).not.toHaveBeenCalled();
+  });
+
+  it('Host/Origin имеют приоритет, панель продолжает работать, недоверенные запросы квоту не тратят', async () => {
+    for (let i = 0; i < 65; i++) {
+      expect((await call('GET', '/api/v1/info', { headers: { host: 'evil.example' } })).status).toBe(403);
+    }
+    await fill(60);
+    expect((await call('GET', '/api/v1/info')).status).toBe(429);
+    expect((await call('GET', '/api/v1/info', { headers: { host: 'evil.example' } })).status).toBe(403);
+    expect((await call('POST', '/api/v1/pair', { body: {}, headers: { origin: 'https://evil.example' } })).status).toBe(403);
+    expect((await call('GET', '/api/status')).status).toBe(200);
+    expect((await call('PUT', '/api/text', { body: { text: 'Через панель' } })).status).toBe(200);
+    expect(harness.store.announceText()).toBe('Через панель');
+  });
+
+  it('экземпляры сервера не разделяют состояние', async () => {
+    await fill(60);
+    const originalPort = port;
+    const second = createPanel({ runtime, env, envPath });
+    try {
+      await new Promise<void>((resolve) => second.server.listen(0, '127.0.0.1', resolve));
+      port = (second.server.address() as AddressInfo).port;
+      expect((await call('GET', '/api/v1/info')).status).toBe(200);
+      port = originalPort;
+      expect((await call('GET', '/api/v1/info')).status).toBe(429);
+    } finally {
+      port = originalPort;
+      await second.close();
+    }
+  });
+
+  it('устройства с одного адреса независимы, отзыв проверяется даже при исчерпанной квоте и остановленном боте', async () => {
+    const db = openDb(env.DATABASE_PATH!);
+    try {
+      const devices = new DeviceStore(db);
+      const first = devices.issue('Pixel');
+      const second = devices.issue('iPhone');
+      runtime.bot = null;
+      await fill(120, bearer(first.token));
+      clock.mockReturnValue(now + 1000);
+      expect((await call('GET', '/api/v1/info', { headers: bearer(first.token) })).status).toBe(429);
+      expect(devices.list().find((device) => device.id === first.device.id)?.lastUsedAt).toBe(now);
+      expect((await call('GET', '/api/v1/status', { headers: bearer(second.token) })).status).toBe(200);
+      expect((await call('GET', '/api/v1/info')).status).toBe(200);
+      devices.revoke(first.device.id);
+      expect((await call('GET', '/api/v1/info', { headers: bearer(first.token) })).status).toBe(401);
+      clock.mockReturnValue(now + 60_000);
+      expect((await call('GET', '/api/v1/info', { headers: bearer(second.token) })).status).toBe(200);
+      expect((await call('GET', '/api/v1/info', { headers: bearer(first.token) })).status).toBe(401);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('смена неверного/отозванного Bearer и forwarded-заголовков не обходит адресную квоту и не тратит квоту устройства', async () => {
+    const db = openDb(env.DATABASE_PATH!);
+    try {
+      const devices = new DeviceStore(db);
+      const active = devices.issue('Pixel');
+      const revoked = devices.issue('Старый телефон');
+      devices.revoke(revoked.device.id);
+      for (let i = 0; i < 60; i++) {
+        const headers = {
+          ...bearer(i % 2 ? revoked.token : `${i}`.padStart(43, 'A')),
+          'x-forwarded-for': `192.0.2.${i}`, forwarded: `for=192.0.2.${i}`, 'x-real-ip': `192.0.2.${i}`,
+        };
+        expect((await call('GET', '/api/v1/info', { headers })).status).toBe(401);
+      }
+      expect((await call('GET', '/api/v1/info', { headers: bearer('new-invalid-token') })).status).toBe(429);
+      expect((await call('GET', '/api/v1/info')).status).toBe(429);
+      await fill(120, bearer(active.token));
+      expect((await call('GET', '/api/v1/info', { headers: bearer(active.token) })).status).toBe(429);
+      clock.mockReturnValue(now + 60_000);
+      expect((await call('GET', '/api/v1/info', { headers: bearer(revoked.token) })).status).toBe(401);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('сопряжение: отдельные 10 обменов по адресу независимо от Authorization, нового кода и общей квоты', async () => {
+    const db = openDb(env.DATABASE_PATH!);
+    try {
+      const devices = new DeviceStore(db);
+      const active = devices.issue('Pixel');
+      await fill(60);
+      for (let i = 0; i < 10; i++) {
+        const issued = await call('POST', '/api/pairing', { body: {} });
+        const headers = i % 3 === 0 ? {} : bearer(i % 3 === 1 ? active.token : `invalid-${i}`);
+        expect((await call('POST', '/api/v1/pair', { body: { code: issued.json.code, name: 'Телефон' }, headers })).status).toBe(200);
+      }
+      const issued = await call('POST', '/api/pairing', { body: {} });
+      const responseHeaders: IncomingHttpHeaders = {};
+      for (const code of [issued.json.code, ...Array.from({ length: 5 }, () => 'неверный')]) {
+        const blocked = await call('POST', '/api/v1/pair', {
+          body: { code, name: 'Ещё телефон' }, headers: { ...bearer(active.token), 'x-forwarded-for': '192.0.2.1' }, responseHeaders,
+        });
+        expect(blocked.status).toBe(429);
+      }
+      expect(responseHeaders['retry-after']).toBe('60');
+      expect(devices.list()).toHaveLength(11);
+      await fill(120, bearer(active.token));
+      expect((await call('GET', '/api/v1/info', { headers: bearer(active.token) })).status).toBe(429);
+      clock.mockReturnValue(now + 60_000);
+      expect(now + 60_000).toBeLessThan(issued.json.expiresAt);
+      const accepted = await call('POST', '/api/v1/pair', { body: { code: issued.json.code, name: 'Ещё телефон' } });
+      expect(accepted.status).toBe(200);
+      expect(devices.list()).toHaveLength(12);
+      expect((await call('POST', '/api/v1/pair', { body: { code: issued.json.code, name: 'Дубль' } })).status).toBe(401);
+    } finally {
+      db.close();
+    }
   });
 });
 

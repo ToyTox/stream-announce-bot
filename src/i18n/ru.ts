@@ -101,6 +101,7 @@ export const ru = {
   'server.badLanguage': 'Неизвестный язык',
   'server.secretsViaApi': 'Секреты через API не меняются: задайте их в панели',
   'server.unauthorized': 'Неверный или отозванный токен устройства',
+  'server.rateLimit': 'Слишком много запросов. Повторите позже',
   'server.pairing.noRegistry': 'Реестр устройств недоступен: не удалось открыть базу данных',
   'server.pairing.badBody': 'Ожидаются код и имя устройства',
   'server.pairing.emptyName': 'Имя устройства не заполнено',

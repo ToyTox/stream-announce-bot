@@ -100,6 +100,7 @@ export const en: Record<keyof typeof ru, string> = {
   'server.badLanguage': 'Unknown language',
   'server.secretsViaApi': 'Secrets cannot be changed via the API: set them in the panel',
   'server.unauthorized': 'Invalid or revoked device token',
+  'server.rateLimit': 'Too many requests. Try again later',
   'server.pairing.noRegistry': 'Device registry unavailable: could not open the database',
   'server.pairing.badBody': 'Expected a code and a device name',
   'server.pairing.emptyName': 'Device name is empty',
