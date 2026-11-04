@@ -150,6 +150,9 @@
   .result { font-size: 14px; }
   .result.ok { color: var(--ok); }
   .result.error { color: var(--error); }
+  .pairing-qr { display: block; width: min(100%, 360px); height: auto; background: white; margin: 12px 0; }
+  .device { border-top: 1px solid var(--border); padding: 12px 0; overflow-wrap: anywhere; }
+  #pairing-address { overflow-wrap: anywhere; }
   .log {
     font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface);
     border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px;
@@ -169,6 +172,7 @@
     <button role="tab" data-tab="status" aria-selected="true" data-i18n="ui.tab.status"></button>
     <button role="tab" data-tab="message" data-i18n="ui.tab.message"></button>
     <button role="tab" data-tab="settings" data-i18n="ui.tab.settings"></button>
+    <button role="tab" data-tab="devices" data-i18n="ui.tab.devices"></button>
     <button role="tab" data-tab="log" data-i18n="ui.tab.log"></button>
   </nav>
   <select id="lang-select" data-i18n-label="ui.language"></select>
@@ -272,6 +276,31 @@
         <span id="import-result" class="result"></span>
       </div>
       <p class="muted small" style="margin-bottom: 0" data-i18n="ui.import.note"></p>
+    </div>
+  </section>
+
+  <section id="tab-devices" hidden>
+    <div class="card">
+      <h2 data-i18n="ui.devices.title"></h2>
+      <button class="btn primary" id="pairing-open" data-i18n="ui.pairing.open" aria-controls="pairing-panel" aria-expanded="false"></button>
+      <div id="pairing-panel" hidden>
+        <p id="pairing-status" role="status" aria-live="polite"></p>
+        <div id="pairing-details" hidden>
+          <p><span data-i18n="ui.pairing.address"></span>: <span id="pairing-address"></span></p>
+          <img id="pairing-qr" class="pairing-qr" data-i18n-label="ui.pairing.qr" alt="">
+          <p id="pairing-expires" role="status" aria-live="off"></p>
+        </div>
+        <div class="row">
+          <button class="btn" id="pairing-renew" data-i18n="ui.pairing.renew" hidden></button>
+          <button class="btn" id="pairing-close" data-i18n="ui.pairing.close"></button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h2 data-i18n="ui.devices.list"></h2>
+      <p id="devices-status" role="status" aria-live="polite"></p>
+      <div id="devices-list"></div>
+      <button class="btn" id="devices-refresh" data-i18n="ui.devices.refresh"></button>
     </div>
   </section>
 
@@ -389,6 +418,7 @@
   let activeTab = 'status';
   const loaders = {};
   function selectTab(name) {
+    if (activeTab === 'devices' && name !== 'devices') closePairing(false);
     activeTab = name;
     for (const button of document.querySelectorAll('nav button')) {
       button.setAttribute('aria-selected', String(button.dataset.tab === name));
@@ -863,6 +893,174 @@
     });
   });
 
+  // ---------- Телефоны и устройства ----------
+  let devicesRequest = 0;
+  let devicesBusy = false;
+  let pairingRequest = 0;
+  let pairingBusy = false;
+  let pairingState = null;
+  let pairingStatusKey = '';
+  let pairingError = '';
+
+  function clearPairingImage() {
+    $('pairing-details').hidden = true;
+    $('pairing-qr').removeAttribute('src');
+    $('pairing-address').textContent = '';
+    $('pairing-expires').textContent = '';
+  }
+
+  function renderPairing() {
+    $('pairing-status').textContent = pairingStatusKey ? t(pairingStatusKey) : pairingError;
+    $('pairing-qr').alt = t('ui.pairing.qr');
+    if (!pairingState) return;
+    const seconds = Math.max(0, Math.ceil((pairingState.expiresAt - Date.now()) / 1000));
+    if (!seconds) {
+      pairingState = null;
+      clearPairingImage();
+      pairingStatusKey = 'ui.pairing.expired';
+      $('pairing-status').textContent = t(pairingStatusKey);
+      return;
+    }
+    $('pairing-details').hidden = false;
+    $('pairing-address').textContent = pairingState.apiUrl;
+    $('pairing-qr').src = pairingState.qrDataUrl;
+    $('pairing-expires').textContent = t('ui.pairing.expires', { seconds });
+  }
+
+  function closePairing(focus = true) {
+    pairingRequest++;
+    pairingBusy = false;
+    pairingState = null;
+    pairingStatusKey = '';
+    pairingError = '';
+    clearPairingImage();
+    $('pairing-panel').hidden = true;
+    $('pairing-open').disabled = false;
+    $('pairing-open').setAttribute('aria-expanded', 'false');
+    if (focus) $('pairing-open').focus();
+  }
+
+  async function issuePairing() {
+    if (pairingBusy) return;
+    const request = ++pairingRequest;
+    pairingBusy = true;
+    pairingState = null;
+    pairingError = '';
+    clearPairingImage();
+    $('pairing-panel').hidden = false;
+    $('pairing-open').disabled = true;
+    $('pairing-open').setAttribute('aria-expanded', 'true');
+    $('pairing-renew').hidden = true;
+    $('pairing-renew').disabled = true;
+    pairingStatusKey = 'ui.devices.loading';
+    renderPairing();
+    try {
+      const capability = await api('GET', '/api/pairing');
+      if (request !== pairingRequest) return;
+      if (!capability.available) {
+        pairingStatusKey = 'ui.pairing.unavailable';
+        renderPairing();
+        return;
+      }
+      const issued = await api('POST', '/api/pairing', {});
+      if (request !== pairingRequest) return;
+      if (!issued.apiUrl || !/^data:image\/png;base64,/.test(issued.qrDataUrl || '')) {
+        pairingStatusKey = 'ui.pairing.unavailable';
+      } else {
+        pairingState = { apiUrl: issued.apiUrl, qrDataUrl: issued.qrDataUrl, expiresAt: issued.expiresAt };
+        pairingStatusKey = 'ui.pairing.scan';
+        $('pairing-renew').hidden = false;
+      }
+      renderPairing();
+      await loadDevices();
+    } catch (error) {
+      if (request !== pairingRequest) return;
+      pairingStatusKey = '';
+      pairingError = error.message;
+      renderPairing();
+      $('pairing-renew').hidden = false;
+    } finally {
+      if (request === pairingRequest) {
+        pairingBusy = false;
+        $('pairing-renew').disabled = false;
+        $('pairing-close').focus();
+      }
+    }
+  }
+
+  async function loadDevices() {
+    const request = ++devicesRequest;
+    $('devices-refresh').disabled = true;
+    $('devices-status').textContent = t('ui.devices.loading');
+    renderPairing();
+    try {
+      const data = await api('GET', '/api/devices');
+      if (request !== devicesRequest) return;
+      $('devices-list').replaceChildren();
+      $('devices-status').textContent = data.devices.length ? '' : t('ui.devices.empty');
+      for (const device of data.devices) {
+        const row = document.createElement('div');
+        row.className = 'device';
+        const name = document.createElement('strong');
+        name.textContent = device.name;
+        const details = document.createElement('p');
+        details.className = 'muted small';
+        details.textContent = t('ui.devices.dates', {
+          created: dateTime(device.createdAt),
+          used: device.lastUsedAt === null ? t('ui.devices.never') : dateTime(device.lastUsedAt),
+        });
+        const state = document.createElement('p');
+        state.textContent = device.revokedAt === null ? t('ui.devices.active') : t('ui.devices.revoked', { date: dateTime(device.revokedAt) });
+        row.append(name, details, state);
+        if (device.revokedAt === null) {
+          const button = document.createElement('button');
+          button.className = 'btn';
+          button.textContent = t('ui.devices.revoke');
+          button.setAttribute('aria-label', t('ui.devices.revokeName', { name: device.name }));
+          button.disabled = devicesBusy;
+          button.addEventListener('click', async () => {
+            if (devicesBusy) return;
+            devicesBusy = true;
+            devicesRequest++;
+            for (const action of $('devices-list').querySelectorAll('button')) action.disabled = true;
+            try {
+              await api('POST', '/api/devices/revoke', { id: device.id });
+              devicesBusy = false;
+              if (await loadDevices()) {
+                $('devices-status').textContent = t('ui.devices.disconnected');
+                $('devices-refresh').focus();
+              }
+            } catch (error) {
+              $('devices-status').textContent = error.message;
+            } finally {
+              devicesBusy = false;
+              for (const action of $('devices-list').querySelectorAll('button')) action.disabled = false;
+              $('devices-refresh').disabled = false;
+            }
+          });
+          row.append(button);
+        }
+        $('devices-list').append(row);
+      }
+      return true;
+    } catch (error) {
+      if (request !== devicesRequest) return;
+      $('devices-list').replaceChildren();
+      $('devices-status').textContent = error.message;
+    } finally {
+      if (request === devicesRequest) $('devices-refresh').disabled = false;
+    }
+  }
+  $('pairing-open').addEventListener('click', issuePairing);
+  $('pairing-renew').addEventListener('click', issuePairing);
+  $('pairing-close').addEventListener('click', () => closePairing());
+  $('pairing-panel').addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closePairing();
+  });
+  $('devices-refresh').addEventListener('click', () => { if (!devicesBusy) loadDevices(); });
+  loaders.devices = loadDevices;
+  setInterval(() => { if (!$('pairing-panel').hidden) renderPairing(); }, 1000);
+
   // ---------- Лог ----------
   let logSeq = 0;
   async function loadLog() {
@@ -900,7 +1098,7 @@
   if (hashTab) initialTab = hashTab;
   loadI18n().catch(() => {}).then(() => {
     loadStatus();
-    selectTab(['status', 'message', 'settings', 'log'].includes(initialTab) ? initialTab : 'status');
+    selectTab(['status', 'message', 'settings', 'devices', 'log'].includes(initialTab) ? initialTab : 'status');
   });
 </script>
 </body>

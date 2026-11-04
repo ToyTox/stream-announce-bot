@@ -47,9 +47,11 @@ Enter the values on the "Settings" tab of the panel. The minimum to start: one d
 | Status | Whether you are live, whether the announcement was sent (with a link to the message), the state of each platform and check errors. The "Check now", "Connection check", "Test announcement to Telegram" and "Test announcement to Discord" buttons (a real announcement marked "🧪 Test" sent only to the chosen platform; silent in Telegram); buttons of destinations that are not configured are hidden |
 | Message | The text for the announcement (like `/text`), your own list of links (including platforms the bot does not track; links marked "always in the announcement" replace the links to the platforms that are live), your own preview — uploading an image from the computer, a preview of the announcement and of the stream-ended message |
 | Settings | All parameters as a form. Secrets are shown masked, an empty field means "do not change". Saving validates the values and restarts the bot without a repeated announcement. The "Import .env…" button replaces the settings with a whole file |
+| Devices | Name, connection date, last use and state of each device; "Disconnect" revokes access. "Connect phone" explains the current limitation |
 | Log | The last 300 lines of what the bot writes |
 
 - The panel is available only on this computer, there is no password.
+- Connecting a real phone is not available yet: the API runs only on this computer. QR pairing will become available after secure remote access (task #9 in the [mobile plan](docs/mobile-app-plan.md)); the address and QR are currently hidden. The device list and revocation work even when the bot is stopped.
 - Your own image is kept in the data folder next to the database: Discord gets it from there. With Telegram and `TELEGRAM_ADMIN_ID`, the bot also sends it to you in a private chat so that Telegram stores the file_id. Without Telegram or without `TELEGRAM_ADMIN_ID` the image is uploaded from the panel and stored only locally (sent to Telegram, if enabled, as a file).
 - Without Telegram, bot commands and messages to the admin are unavailable; everything else, including the announcement text and the image, is done in the panel.
 - If the settings are filled in with an error, the bot will not start, but the panel will show the error — it can be fixed on the "Settings" tab.
