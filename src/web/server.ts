@@ -26,8 +26,9 @@ import { StaticLinksError } from '../store.js';
 import { TelegramError } from '../telegram/client.js';
 import { PLATFORMS, PLATFORM_LABELS } from '../types.js';
 import { replaceEnvFile, writeEnvFile } from './envFile.js';
-import { pairingApiAddress, pairingQr } from './pairingQr.js';
+import { pairingQr } from './pairingQr.js';
 import { hasSecretKey, settingGuides, settingsChanges, settingsView, settingsViewV1 } from './settings.js';
+import { discoverTailscaleAddress, tailscaleAddressAssigned, type TailscaleAddress } from './tailscale.js';
 
 /**
  * Локальная панель: настройки, статус, превью сообщений и лог. Слушает только
@@ -51,8 +52,6 @@ export interface PanelDeps {
   defaults?: Env;
   /** Версия приложения для шапки панели. */
   version?: string;
-  /** Доверенный адрес удалённого транспорта. До задачи 9 production его не передаёт. */
-  pairingApiUrl?: () => string | undefined;
 }
 
 export interface Panel {
@@ -60,6 +59,14 @@ export interface Panel {
   /** Реальный порт после listen: при порте 0 его выбирает система. */
   port: number;
   close(): Promise<void>;
+}
+
+interface RemoteListener {
+  server: Server;
+  node: TailscaleAddress;
+  origin: URL;
+  controller: AbortController;
+  timer?: NodeJS.Timeout;
 }
 
 /** Ищем web/index.html вверх по дереву: код может лежать в dist/ или в dist-desktop/src/. */
@@ -84,6 +91,7 @@ const IMAGE_LIMIT = 10 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const RATE_WINDOW_MS = 60 * 1000;
 const RATE_MAX_KEYS = 4096;
+const TAILSCALE_CHECK_MS = 5000;
 
 /** Общее минутное окно; действующие записи не вытесняются при заполнении памяти. */
 function rateLimit(max: number): (key: string) => number | undefined {
@@ -159,8 +167,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
  * чужой Host (DNS rebinding) и чужой Origin отклоняем, а POST принимаем только
  * с JSON — такой запрос браузер не отправит на другой сайт без разрешения CORS.
  */
-function checkTrusted(req: IncomingMessage, port: number): void {
-  const allowedHosts = [`localhost:${port}`, `127.0.0.1:${port}`];
+function checkTrusted(req: IncomingMessage, allowedHosts: string[]): void {
   const host = req.headers.host ?? '';
   if (!allowedHosts.includes(host)) throw HttpError.localized(403, 'server.forbiddenHost');
 
@@ -205,8 +212,48 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function createPanel(deps: PanelDeps): Panel {
+export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<void> } {
   const { runtime, env, envPath, defaults = {}, version = '' } = deps;
+  let remote: RemoteListener | undefined;
+  let remoteClosed: Promise<void> | undefined;
+
+  function stopRemote(reason?: string): void {
+    if (!remote) return;
+    const { server, controller, timer } = remote;
+    remote = undefined;
+    controller.abort();
+    clearTimeout(timer);
+    remoteClosed = closeServer(server);
+    if (reason) console.warn(`⚠️ Удалённый API через Tailscale остановлен: ${reason}`);
+  }
+
+  function activeRemote(): RemoteListener | undefined {
+    if (remote && (!remote.server.listening || !tailscaleAddressAssigned(remote.node))) {
+      stopRemote('локальный адрес Tailscale больше не подтверждён');
+    }
+    return remote;
+  }
+
+  function scheduleRemoteCheck(listener: RemoteListener): void {
+    listener.timer = setTimeout(async () => {
+      try {
+        const node = await discoverTailscaleAddress(listener.controller.signal);
+        if (remote !== listener) return;
+        if (node.address !== listener.node.address || node.interfaceName !== listener.node.interfaceName) {
+          stopRemote('локальный адрес Tailscale изменился');
+          return;
+        }
+        scheduleRemoteCheck(listener);
+      } catch (error) {
+        if (remote === listener) stopRemote(errorText(error));
+      }
+    }, TAILSCALE_CHECK_MS).unref();
+  }
+
+  function pairingApiUrl(): string | undefined {
+    const listener = activeRemote();
+    return listener && `${listener.origin.origin}/api/v1`;
+  }
 
   // Реестр устройств живёт в той же базе, что и бот, но открывается отдельным соединением:
   // бот может быть не запущен (ошибка конфигурации) или перезапускаться через runtime.restart.
@@ -233,14 +280,11 @@ export function createPanel(deps: PanelDeps): Panel {
   const addressRate = rateLimit(60);
   const pairingRate = rateLimit(10);
 
-  /**
-   * Проверка Bearer для /api/v1/*. Токен в заголовке должен быть действующим.
-   * Без заголовка запрос с localhost проходит; для остальных адресов обязательный токен появится в задаче 9.
-   */
-  function checkBearer(req: IncomingMessage): { store: DeviceStore; id: number; key: string } | undefined {
+  /** Без Bearer разрешены только локальные запросы к панели. */
+  function checkBearer(req: IncomingMessage, remoteRequest: boolean): { store: DeviceStore; id: number; key: string } | undefined {
     const token = bearerToken(req);
     if (token === undefined) {
-      if (isLocalRequest(req)) return;
+      if (!remoteRequest && isLocalRequest(req)) return;
       throw HttpError.localized(401, 'server.unauthorized');
     }
     const store = devices();
@@ -299,9 +343,12 @@ export function createPanel(deps: PanelDeps): Panel {
     return { ok: true, changed, configError: configErrorText(runtime, lang) };
   }
 
-  async function route(req: IncomingMessage, res: ServerResponse, url: URL, lang: Lang): Promise<void> {
+  async function route(req: IncomingMessage, res: ServerResponse, url: URL, lang: Lang, remoteRequest: boolean): Promise<void> {
     const key = `${req.method} ${url.pathname}`;
     const needBot = () => requireBot(runtime, lang);
+    const recheckRemoteBearer = () => {
+      if (remoteRequest) checkBearer(req, true);
+    };
 
     switch (key) {
       case 'GET /':
@@ -313,15 +360,16 @@ export function createPanel(deps: PanelDeps): Panel {
       }
 
       case 'POST /api/pairing': {
+        const apiUrl = pairingApiUrl();
+        if (url.searchParams.get('qr') === 'true' && !apiUrl) return sendJson(res, 200, {});
         if (!devices()) throw HttpError.localized(503, 'server.pairing.noRegistry');
         const issued = pairing.issue();
-        const apiUrl = pairingApiAddress(deps.pairingApiUrl?.());
         const qrDataUrl = await pairingQr(apiUrl, issued);
-        return sendJson(res, 200, { ...issued, ...(qrDataUrl ? { apiUrl, qrDataUrl } : {}) });
+        return sendJson(res, 200, { ...issued, ...(qrDataUrl && pairingApiUrl() === apiUrl ? { apiUrl, qrDataUrl } : {}) });
       }
 
       case 'GET /api/pairing':
-        return sendJson(res, 200, { available: pairingApiAddress(deps.pairingApiUrl?.()) !== undefined });
+        return sendJson(res, 200, { available: pairingApiUrl() !== undefined });
 
       case 'GET /api/devices': {
         try {
@@ -423,6 +471,7 @@ export function createPanel(deps: PanelDeps): Panel {
       case 'PUT /api/v1/text': {
         const store = needBot().store;
         const body = await readJson(req);
+        recheckRemoteBearer();
         const text = typeof body.text === 'string' ? body.text.trim() : '';
         if (text) store.setAnnounceText(text);
         else store.clearAnnounceText();
@@ -437,6 +486,7 @@ export function createPanel(deps: PanelDeps): Panel {
       case 'PUT /api/v1/links': {
         const store = needBot().store;
         const body = await readJson(req);
+        recheckRemoteBearer();
         try {
           return sendJson(res, 200, { links: store.setStaticLinks(body.links) });
         } catch (error) {
@@ -457,6 +507,7 @@ export function createPanel(deps: PanelDeps): Panel {
         if (!IMAGE_TYPES.has(type)) throw HttpError.localized(415, 'server.imageTypes');
 
         const data = await readBody(req, IMAGE_LIMIT);
+        recheckRemoteBearer();
 
         // Загрузка в личку нужна, только чтобы получить file_id; без Telegram или админа картинка живёт локально.
         const adminId = bot.config.telegram?.adminId;
@@ -533,6 +584,7 @@ export function createPanel(deps: PanelDeps): Panel {
 
       case 'PUT /api/v1/settings': {
         const body = await readJson(req);
+        recheckRemoteBearer();
         if (hasSecretKey(body.values)) throw HttpError.localized(400, 'server.secretsViaApi');
         return sendJson(res, 200, await saveSettings(body.values, lang, 'через API'));
       }
@@ -597,13 +649,30 @@ export function createPanel(deps: PanelDeps): Panel {
     }
   }
 
-  const server = createServer((req, res) => {
+  function handleRequest(req: IncomingMessage, res: ServerResponse, server: Server, remoteRequest = false): void {
     void (async () => {
       const lang = requestLanguage(req, env);
       try {
-        const port = (server.address() as AddressInfo).port;
-        checkTrusted(req, port);
-        const url = new URL(req.url ?? '/', `http://localhost:${port}`);
+        const target = req.url ?? '/';
+        let url: URL;
+        if (remoteRequest) {
+          const listener = activeRemote();
+          if (listener?.server !== server) return;
+          const { origin } = listener;
+          if (req.headersDistinct.host?.length !== 1) throw HttpError.localized(403, 'server.forbiddenHost');
+          checkTrusted(req, origin.port ? [origin.host] : [origin.host, `${origin.host}:80`]);
+          const rawPath = target.split('?', 1)[0]!;
+          if (!/^\/api\/v1(?:\/[A-Za-z0-9_-]+)*\/?$/.test(rawPath) || target.includes('#') ||
+              (req.method === 'POST' && rawPath === '/api/v1/pair' && target !== rawPath)) {
+            throw HttpError.localized(404, 'server.notFound');
+          }
+          url = new URL(target, origin);
+          if (url.pathname !== rawPath || url.origin !== origin.origin) throw HttpError.localized(404, 'server.notFound');
+        } else {
+          const port = (server.address() as AddressInfo).port;
+          checkTrusted(req, [`localhost:${port}`, `127.0.0.1:${port}`]);
+          url = new URL(target, `http://localhost:${port}`);
+        }
         if (url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/')) {
           const address = req.socket.remoteAddress ?? '';
           let retryAfter: number | undefined;
@@ -613,7 +682,7 @@ export function createPanel(deps: PanelDeps): Panel {
             retryAfter = pairingRate(address);
           } else {
             try {
-              identity = checkBearer(req);
+              identity = checkBearer(req, remoteRequest);
             } catch (error) {
               authError = error;
             }
@@ -630,7 +699,7 @@ export function createPanel(deps: PanelDeps): Panel {
         if (req.method === 'POST' && !type.startsWith('application/json')) {
           throw HttpError.localized(415, 'server.jsonExpected');
         }
-        await route(req, res, url, lang);
+        await route(req, res, url, lang, remoteRequest);
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500;
         if (status === 500) console.error('❌ Ошибка панели:', errorText(error));
@@ -639,32 +708,63 @@ export function createPanel(deps: PanelDeps): Panel {
         else res.end();
       }
     })();
-  });
+  }
 
-  const panel: Panel = {
+  const server = createServer((req, res) => handleRequest(req, res, server));
+  const panel = {
     server,
     port: 0,
-    close: () =>
-      new Promise((resolve) => {
-        server.close(() => {
-          devicesDb?.db.close();
-          devicesDb = undefined;
-          resolve();
-        });
-        server.closeAllConnections();
-      }),
+    async startRemote() {
+      let node: TailscaleAddress;
+      try {
+        node = await discoverTailscaleAddress();
+      } catch (error) {
+        console.warn(`⚠️ Удалённый API через Tailscale недоступен: ${errorText(error)}`);
+        return;
+      }
+
+      const origin = new URL(`http://${node.address}:${panel.port}`);
+      const api = createServer((req, res) => handleRequest(req, res, api, true));
+      try {
+        await listen(api, panel.port, node.address);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        console.warn(`⚠️ Не удалось открыть удалённый API через Tailscale на порту ${panel.port}${code ? ` (${code})` : ''}`);
+        return;
+      }
+
+      api.on('error', () => stopRemote('ошибка слушателя'));
+      remote = { server: api, node, origin, controller: new AbortController() };
+      const listener = activeRemote();
+      if (listener) {
+        scheduleRemoteCheck(listener);
+        console.log(`🌐 Удалённый API через Tailscale: ${origin.origin}/api/v1`);
+      }
+    },
+    async close() {
+      stopRemote();
+      await Promise.all([closeServer(server), remoteClosed]);
+      devicesDb?.db.close();
+      devicesDb = undefined;
+    },
   };
   return panel;
 }
 
-function listen(panel: Panel, port: number): Promise<void> {
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve) => {
+    server.close(() => resolve());
+    server.closeAllConnections();
+  });
+}
+
+function listen(server: Server, port: number, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const onError = (error: Error) => reject(error);
-    panel.server.once('error', onError);
-    panel.server.listen(port, '127.0.0.1', () => {
-      panel.server.off('error', onError);
-      panel.port = (panel.server.address() as AddressInfo).port;
-      resolve();
+    server.once('error', onError);
+    server.listen(port, host, () => {
+      server.off('error', onError);
+      resolve((server.address() as AddressInfo).port);
     });
   });
 }
@@ -676,18 +776,18 @@ function listen(panel: Panel, port: number): Promise<void> {
 export async function startPanel(
   deps: PanelDeps,
   port: number,
-  options: { fallbackPort?: boolean } = {}
+  options: { fallbackPort?: boolean; remoteEnabled?: boolean } = {}
 ): Promise<Panel | undefined> {
   let panel = createPanel(deps);
   try {
-    await listen(panel, port);
+    panel.port = await listen(panel.server, port, '127.0.0.1');
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'EADDRINUSE' && options.fallbackPort && port !== 0) {
       console.warn(`⚠️  Порт ${port} занят, беру свободный`);
       panel = createPanel(deps);
       try {
-        await listen(panel, 0);
+        panel.port = await listen(panel.server, 0, '127.0.0.1');
       } catch (retry) {
         console.error(`❌ Панель не запустилась: ${errorText(retry)}`);
         return undefined;
@@ -699,5 +799,6 @@ export async function startPanel(
     }
   }
   console.log(`🌐 Панель: http://localhost:${panel.port}`);
+  if (options.remoteEnabled) await panel.startRemote();
   return panel;
 }

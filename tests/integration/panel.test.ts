@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { request, type IncomingHttpHeaders } from 'node:http';
+import { request, Server as HttpServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,15 +11,18 @@ import type { TelegramClient } from '../../src/telegram/client.js';
 import { pushLog } from '../../src/log.js';
 import { openDb } from '../../src/db.js';
 import { DeviceStore } from '../../src/devices.js';
-import { createPanel, type Panel, type PanelRuntime } from '../../src/web/server.js';
+import { createPanel, type PanelRuntime } from '../../src/web/server.js';
+import { discoverTailscaleAddress, tailscaleAddressAssigned } from '../../src/web/tailscale.js';
 import { createHarness, liveStream, testConfig, type Harness } from '../helpers/announcerHarness.js';
 
 /** Панель на случайном порту поверх тестового бота: настоящий HTTP, фейковый Telegram. */
 
+vi.mock('../../src/web/tailscale.js');
+
 const ADMIN = 42;
 
 let harness: Harness;
-let panel: Panel;
+let panel: ReturnType<typeof createPanel>;
 let port: number;
 let runtime: PanelRuntime & { restart: ReturnType<typeof vi.fn> };
 let env: Env;
@@ -34,7 +37,14 @@ interface Reply {
 function call(
   method: string,
   path: string,
-  options: { body?: unknown; raw?: Buffer; headers?: Record<string, string>; responseHeaders?: IncomingHttpHeaders } = {}
+  options: {
+    body?: unknown;
+    raw?: Buffer;
+    headers?: Record<string, string>;
+    responseHeaders?: IncomingHttpHeaders;
+    connectHost?: string;
+    sendBodyAfter?: () => Promise<void>;
+  } = {}
 ): Promise<Reply> {
   const headers: Record<string, string> = { ...options.headers };
   let payload: Buffer | undefined = options.raw;
@@ -43,7 +53,7 @@ function call(
     headers['content-type'] ??= 'application/json';
   }
   return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port, method, path, headers }, (res) => {
+    const req = request({ host: options.connectHost ?? '127.0.0.1', port, method, path, headers }, (res) => {
       if (options.responseHeaders) Object.assign(options.responseHeaders, res.headers);
       const chunks: Buffer[] = [];
       res.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -54,7 +64,13 @@ function call(
       });
     });
     req.on('error', reject);
-    req.end(payload);
+    if (options.sendBodyAfter) {
+      req.setHeader('content-length', payload?.length ?? 0);
+      req.flushHeaders();
+      void options.sendBodyAfter().then(() => req.end(payload), (error: Error) => req.destroy(error));
+    } else {
+      req.end(payload);
+    }
   });
 }
 
@@ -1314,6 +1330,185 @@ describe('панель: сопряжение устройства', () => {
 
     expect(issued.status).toBe(503);
     expect(paired.status).toBe(503);
+  });
+});
+
+describe('удалённый API v1', () => {
+  const tailscaleIp = '100.100.10.20';
+  const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+  const remote = (method: string, path: string, options: Parameters<typeof call>[2] = {}) =>
+    call(method, path, { ...options, connectHost: '::1', headers: { host: `${tailscaleIp}:${port}`, ...options.headers } });
+  const issue = () => call('POST', '/api/pairing', { body: {} });
+
+  async function revokeDuringWrite(path: string, options: Parameters<typeof call>[2]): Promise<Reply> {
+    const code = (await issue()).json.code;
+    const paired = await remote('POST', '/api/v1/pair', { body: { code, name: 'Pixel' } });
+    expect(paired.status).toBe(200);
+    const id = paired.json.device.id;
+
+    let confirmAuthorization!: () => void;
+    const authorized = new Promise<void>((resolve) => { confirmAuthorization = resolve; });
+    const originalTouch = DeviceStore.prototype.touch;
+    const touch = vi.spyOn(DeviceStore.prototype, 'touch').mockImplementation(function (this: DeviceStore, deviceId, now) {
+      originalTouch.call(this, deviceId, now);
+      if (deviceId === id) confirmAuthorization();
+    });
+    try {
+      const reply = await remote('PUT', path, {
+        ...options,
+        headers: { ...options?.headers, ...bearer(paired.json.token) },
+        sendBodyAfter: async () => {
+          await authorized;
+          expect((await call('POST', '/api/devices/revoke', { body: { id } })).status).toBe(200);
+        },
+      });
+      expect(touch).toHaveBeenCalledExactlyOnceWith(id);
+      return reply;
+    } finally {
+      touch.mockRestore();
+    }
+  }
+
+  beforeEach(async () => {
+    env.DATABASE_PATH = join(dir, 'devices.db');
+    vi.mocked(discoverTailscaleAddress).mockResolvedValue({ address: tailscaleIp, interfaceName: 'utun4' });
+    vi.mocked(tailscaleAddressAssigned).mockReturnValue(true);
+    const listen = HttpServer.prototype.listen;
+    vi.spyOn(HttpServer.prototype, 'listen').mockImplementation(function (this: HttpServer, ...args: unknown[]) {
+      if (args[1] === tailscaleIp) args[1] = '::1';
+      return Reflect.apply(listen, this, args);
+    });
+    panel.port = port;
+    await panel.startRemote();
+  });
+
+  it('отделяет панель от удалённого API и проверяет Host и Origin на обоих входах', async () => {
+    const code = (await issue()).json.code;
+    const paired = await remote('POST', '/api/v1/pair', { body: { code, name: 'Pixel' } });
+    expect(paired.status).toBe(200);
+    const headers = bearer(paired.json.token);
+    for (const path of ['/', '/index.html', '/api/status', '/api/pairing', '/api/devices', '/api/v10/info', '/api/v1/devices', '/api/v1/pairing']) {
+      expect((await remote('GET', path, { headers })).status).toBe(404);
+    }
+    expect((await remote('POST', '/api/devices/revoke', { headers, body: { id: paired.json.device.id } })).status).toBe(404);
+    for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, tailscaleIp, `${tailscaleIp}:${port + 1}`]) {
+      expect((await remote('GET', '/api/v1/info', { headers: { ...headers, host } })).status).toBe(403);
+    }
+    for (const origin of ['null', `http://127.0.0.1:${port}`, `https://${tailscaleIp}:${port}`, 'http://evil.example']) {
+      expect((await remote('GET', '/api/v1/info', { headers: { ...headers, origin } })).status).toBe(403);
+    }
+    expect((await remote('GET', '/api/v1/info', { headers: { ...headers, origin: `http://${tailscaleIp}:${port}` } })).status).toBe(200);
+    expect((await call('GET', '/api/v1/info')).status).toBe(200);
+    expect((await call('GET', '/', { headers: { host: `${tailscaleIp}:${port}` } })).status).toBe(403);
+    expect((await call('GET', '/', { headers: { origin: `http://${tailscaleIp}:${port}` } })).status).toBe(403);
+    expect((await call('GET', '/')).status).toBe(200);
+  });
+
+  it('требует Bearer даже от loopback и принимает код только по точному пути и один раз', async () => {
+    const body = { code: (await issue()).json.code, name: 'Pixel' };
+    for (const path of [
+      '/api/v1/./pair', '/api/v1//../pair', '/api/v1/%2e/pair', '/api/v1/../v1/pair', '/api/v1\\pair',
+      '/api/v1/%70air', '/api/v1/pair?', '/api/v1/pair?other=1', '/api/v1/pair#fragment',
+      `//${tailscaleIp}:${port}/api/v1/pair`, `http://${tailscaleIp}:${port}/api/v1/pair`,
+    ]) {
+      expect((await remote('POST', path, { body })).status).toBe(404);
+    }
+    expect((await remote('GET', '/api/v1/pair')).status).toBe(401);
+    expect((await remote('GET', '/api/v1/info', { headers: { 'x-forwarded-for': '127.0.0.1' } })).status).toBe(401);
+    const paired = await remote('POST', '/api/v1/pair', { body });
+    expect(paired.status).toBe(200);
+    expect((await call('POST', '/api/v1/pair', { body })).status).toBe(401);
+    const headers = bearer(paired.json.token);
+    expect((await remote('GET', '/api/v1/info?test=1', { headers })).status).toBe(200);
+    expect((await remote('GET', '/api/v1/../devices', { headers })).status).toBe(404);
+    expect((await call('GET', '/api/devices')).json.devices).toEqual([expect.objectContaining({ id: paired.json.device.id })]);
+    expect((await call('POST', '/api/devices/revoke', { body: { id: paired.json.device.id } })).status).toBe(200);
+    expect((await remote('GET', '/api/v1/info', { headers })).status).toBe(401);
+  });
+
+  it('делит квоту устройства между входами и отклоняет запись до действия маршрута', async () => {
+    const code = (await issue()).json.code;
+    const paired = await remote('POST', '/api/v1/pair', { body: { code, name: 'Pixel' } });
+    expect(paired.status).toBe(200);
+    const headers = bearer(paired.json.token);
+    const touch = vi.spyOn(DeviceStore.prototype, 'touch');
+    const initialText = 'Разрешённая запись';
+    const written = await remote('PUT', '/api/v1/text', { headers, body: { text: initialText } });
+    expect(written).toEqual({ status: 200, json: { text: initialText } });
+    expect(touch).toHaveBeenCalledExactlyOnceWith(paired.json.device.id);
+    touch.mockRestore();
+
+    for (let i = 0; i < 59; i++) {
+      expect((await call('GET', '/api/v1/info', { headers })).status).toBe(200);
+      expect((await remote('GET', '/api/v1/info', { headers })).status).toBe(200);
+    }
+    expect((await call('GET', '/api/v1/info', { headers })).status).toBe(200);
+    const responseHeaders: IncomingHttpHeaders = {};
+    const blocked = await remote('PUT', '/api/v1/text', { headers, body: { text: 'Запрещённая запись' }, responseHeaders });
+    expect(blocked.status).toBe(429);
+    expect(Number(responseHeaders['retry-after'])).toBeGreaterThan(0);
+    expect((await call('GET', '/api/v1/info', { headers })).status).toBe(429);
+    expect((await call('GET', '/api/text')).json.text).toBe(initialText);
+  });
+
+  it('отзыв после заголовков PUT настроек даёт 401 до записи и перезапуска', async () => {
+    const beforeEnvFile = readFileSync(envPath, 'utf8');
+    const beforeEnv = { ...env };
+    const reply = await revokeDuringWrite('/api/v1/settings', {
+      body: { values: { VKVIDEO_CHANNEL: 'other' } }, headers: { 'accept-language': 'en' },
+    });
+
+    expect(reply).toEqual({ status: 401, json: { error: 'Invalid or revoked device token' } });
+    expect(readFileSync(envPath, 'utf8')).toBe(beforeEnvFile);
+    expect(env).toEqual(beforeEnv);
+    expect(runtime.restart).not.toHaveBeenCalled();
+  });
+
+  it('отзыв после заголовков PUT сохраняет текст и ссылки', async () => {
+    harness.store.setAnnounceText('Исходный текст');
+    const links = [{ label: 'Исходная ссылка', url: 'https://example.com', always: false }];
+    harness.store.setStaticLinks(links);
+
+    expect((await revokeDuringWrite('/api/v1/text', { body: { text: 'Замена' } })).status).toBe(401);
+    expect((await revokeDuringWrite('/api/v1/links', { body: { links: [] } })).status).toBe(401);
+    expect(harness.store.announceText()).toBe('Исходный текст');
+    expect(harness.store.staticLinks()).toEqual(links);
+  });
+
+  it.each([true, false])('отзыв после заголовков PUT картинки исключает запись и отправку (Telegram: %s)', async (telegram) => {
+    if (!telegram) runtime.bot!.telegram = undefined;
+    const reply = await revokeDuringWrite('/api/v1/image', {
+      raw: Buffer.from([0x89, 0x50, 0x4e, 0x47]), headers: { 'content-type': 'image/png' },
+    });
+
+    expect(reply).toEqual({ status: 401, json: { error: 'Неверный или отозванный токен устройства' } });
+    expect(harness.telegram.uploadPhoto).not.toHaveBeenCalled();
+    expect(harness.store.announcePhoto()).toBeNull();
+    expect(existsSync(join(harness.dataDir, 'announce-image.bin'))).toBe(false);
+  });
+
+  it('считает адресные квоты по TCP и не погашает код обменом с 429', async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    for (let i = 0; i < 60; i++) {
+      const headers = { ...bearer(`invalid-${i}`), 'x-forwarded-for': `192.0.2.${i}` };
+      expect((await remote('GET', '/api/v1/info', { headers })).status).toBe(401);
+    }
+    const responseHeaders: IncomingHttpHeaders = {};
+    expect((await remote('GET', '/api/v1/info', { responseHeaders })).status).toBe(429);
+    expect(responseHeaders['retry-after']).toBe('60');
+    expect((await call('GET', '/api/v1/info')).status).toBe(200);
+    for (let i = 0; i < 10; i++) {
+      expect((await remote('POST', '/api/v1/pair', {
+        headers: { 'x-forwarded-for': `192.0.2.${i}` }, body: { code: 'invalid', name: 'Pixel' },
+      })).status).toBe(401);
+    }
+    const body = { code: (await issue()).json.code, name: 'Pixel' };
+    expect((await remote('POST', '/api/v1/pair', { body, responseHeaders })).status).toBe(429);
+    expect(responseHeaders['retry-after']).toBe('60');
+    expect((await call('GET', '/api/devices')).json.devices).toEqual([]);
+    clock.mockReturnValue(now + 60_000);
+    expect((await remote('POST', '/api/v1/pair', { body })).status).toBe(200);
   });
 });
 

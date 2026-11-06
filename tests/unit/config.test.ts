@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig } from '../../src/config.js';
+import { ConfigError, loadConfig, loadWebConfig } from '../../src/config.js';
 
 const base = {
   TELEGRAM_BOT_TOKEN: 'token',
@@ -8,6 +8,14 @@ const base = {
   TWITCH_CLIENT_ID: 'cid',
   TWITCH_CLIENT_SECRET: 'secret',
 };
+
+describe('loadWebConfig', () => {
+  it('включает удалённый API только при явно заданном флаге', () => {
+    expect(loadWebConfig({})).toEqual({ enabled: true, port: 3210, remoteEnabled: false });
+    expect(loadWebConfig({ REMOTE_ENABLED: 'false' }).remoteEnabled).toBe(false);
+    expect(loadWebConfig({ REMOTE_ENABLED: ' true ' }).remoteEnabled).toBe(true);
+  });
+});
 
 describe('loadConfig', () => {
   it('собирает конфиг с дефолтами', () => {

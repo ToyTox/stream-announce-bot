@@ -222,6 +222,7 @@ export function loadConfig(env: Env = process.env): Config {
 export interface WebConfig {
   enabled: boolean;
   port: number;
+  remoteEnabled: boolean;
 }
 
 /**
@@ -233,5 +234,5 @@ export function loadWebConfig(env: Env = process.env): WebConfig {
   if (port < 1 || port > 65535) {
     throw new ConfigError('config.port', { value: port });
   }
-  return { enabled: bool(env, 'WEB_ENABLED', true), port };
+  return { enabled: bool(env, 'WEB_ENABLED', true), port, remoteEnabled: bool(env, 'REMOTE_ENABLED', false) };
 }
