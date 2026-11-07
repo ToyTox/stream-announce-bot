@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { request, Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,9 +10,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDb, type Db } from '../../src/db.js';
 import { DeviceStore } from '../../src/devices.js';
 import { messagesFor, t, type Lang } from '../../src/i18n/index.js';
-import { createPanel, type Panel } from '../../src/web/server.js';
+import { createPanel } from '../../src/web/server.js';
+import { discoverTailscaleAddress, tailscaleAddressAssigned } from '../../src/web/tailscale.js';
 
 const jsQR = jsQrModule as unknown as typeof import('jsqr').default;
+const tailscaleIp = '100.100.10.20';
+vi.mock('../../src/web/tailscale.js');
 
 /** Выполняем настоящий блок интерфейса в VM; HTTP и временная база настоящие, DOM минимальный. */
 class Element {
@@ -39,13 +43,13 @@ const html = readFileSync(new URL('../../web/index.html', import.meta.url), 'utf
 const block = html.split('  // ---------- Телефоны и устройства ----------')[1]!.split('  // ---------- Лог ----------')[0]!;
 let dir: string;
 let db: Db;
-let panel: Panel;
+let panel: ReturnType<typeof createPanel>;
 let base: string;
 let trustedAddress: string | undefined;
 let lang: Lang;
 let now: number;
 let elements: Record<string, Element>;
-let tick: () => void;
+let tick: () => Promise<void>;
 let calls: string[];
 let intercept: ((method: string, path: string, body?: unknown) => Promise<unknown> | undefined) | undefined;
 let ui: { issuePairing(): Promise<void>; loadDevices(): Promise<void>; closePairing(): void; renderPairing(): void };
@@ -58,9 +62,10 @@ beforeEach(async () => {
   now = Date.now();
   calls = [];
   intercept = undefined;
-  panel = createPanel({ runtime: { bot: null, configError: null, restart: vi.fn() }, env: { DATABASE_PATH: join(dir, 'bot.db') }, envPath: join(dir, '.env'), pairingApiUrl: () => trustedAddress });
+  panel = createPanel({ runtime: { bot: null, configError: null, restart: vi.fn() }, env: { DATABASE_PATH: join(dir, 'bot.db') }, envPath: join(dir, '.env') });
   await new Promise<void>((resolve) => panel.server.listen(0, '127.0.0.1', resolve));
-  base = `http://127.0.0.1:${(panel.server.address() as AddressInfo).port}`;
+  panel.port = (panel.server.address() as AddressInfo).port;
+  base = `http://127.0.0.1:${panel.port}`;
   elements = {};
   for (const match of html.matchAll(/<[^>]+id="([^"]+)"[^>]*>/g)) {
     const node = new Element();
@@ -74,7 +79,7 @@ beforeEach(async () => {
     dateTime: (ms: number) => new Date(ms).toLocaleString(messagesFor(lang).locale),
     Date: class extends Date { static now() { return now; } },
     loaders: {},
-    setInterval: (callback: () => void) => { tick = callback; },
+    setInterval: (callback: () => Promise<void>) => { tick = callback; },
     api: async (method: string, path: string, body?: unknown) => {
       calls.push(`${method} ${path}`);
       const result = intercept?.(method, path, body);
@@ -100,6 +105,32 @@ function decodeQr(): any {
   return JSON.parse(jsQR(new Uint8ClampedArray(png.data), png.width, png.height)!.data);
 }
 
+async function enableRemote() {
+  vi.mocked(discoverTailscaleAddress).mockResolvedValue({ address: tailscaleIp, interfaceName: 'utun4' });
+  vi.mocked(tailscaleAddressAssigned).mockReturnValue(true);
+  const listen = HttpServer.prototype.listen;
+  vi.spyOn(HttpServer.prototype, 'listen').mockImplementation(function (this: HttpServer, ...args: unknown[]) {
+    if (args[1] === tailscaleIp) args[1] = '::1';
+    return Reflect.apply(listen, this, args);
+  });
+  await panel.startRemote();
+  trustedAddress = `http://${tailscaleIp}:${panel.port}/api/v1`;
+}
+
+function pairRemotely(code: string): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const req = request({
+      host: '::1', port: panel.port, path: '/api/v1/pair', method: 'POST',
+      headers: { host: `${tailscaleIp}:${panel.port}`, 'content-type': 'application/json' },
+    }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify({ code, name: 'Pixel' }));
+  });
+}
+
 function deferred<T>() {
   let resolve!: (result: T) => void;
   let reject!: (error: Error) => void;
@@ -111,7 +142,7 @@ describe('панель: интерфейс устройств', () => {
   it('честная недоступность не выпускает код и не показывает localhost, доступна клавиатура', async () => {
     await el('pairing-open').click();
     expect(calls).toEqual(['GET /api/pairing']);
-    expect(el('pairing-status').textContent).toContain('№9');
+    expect(el('pairing-status').textContent).toContain('REMOTE_ENABLED=true');
     expect(el('pairing-details').hidden).toBe(true);
     expect(el('pairing-qr').src).toBe('');
     expect(el('pairing-renew').hidden).toBe(true);
@@ -121,11 +152,11 @@ describe('панель: интерфейс устройств', () => {
     expect(el('pairing-open').focused).toBe(true);
     lang = 'en';
     await ui.issuePairing();
-    expect(el('pairing-status').textContent).toContain('task #9');
+    expect(el('pairing-status').textContent).toContain('check the logs');
   });
 
-  it('тестовый адрес: сканируемый QR, повторный выпуск, срок и одноразовый обмен', async () => {
-    trustedAddress = 'http://100.100.10.20:3210/api/v1';
+  it('сканируемый QR с фактическим портом, повторный выпуск, срок и одноразовый обмен через удалённый вход', async () => {
+    await enableRemote();
     await ui.issuePairing();
     const first = decodeQr();
     expect(first.apiUrl).toBe(trustedAddress);
@@ -136,28 +167,61 @@ describe('панель: интерфейс устройств', () => {
     expect(el('pairing-expires').textContent).toBe(t('ru', 'ui.pairing.expires', { seconds: Math.ceil((first.expiresAt - now) / 1000) }));
     await el('pairing-renew').click();
     const second = decodeQr();
-    const pair = (code: string) => fetch(base + '/api/v1/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code, name: 'Pixel' }) });
-    expect((await pair(first.code)).status).toBe(401);
-    expect((await pair(second.code)).status).toBe(200);
-    expect((await pair(second.code)).status).toBe(401);
+    expect(await pairRemotely(first.code)).toBe(401);
+    expect(await pairRemotely(second.code)).toBe(200);
+    expect(await pairRemotely(second.code)).toBe(401);
     lang = 'en';
     ui.renderPairing();
     expect(el('pairing-expires').textContent).toContain('Expires in');
     expect(el('pairing-qr').alt).toBe('Phone pairing QR code');
     now = second.expiresAt;
-    tick();
+    await tick();
     expect(el('pairing-details').hidden).toBe(true);
     expect(el('pairing-qr').src).toBe('');
     expect(el('pairing-status').textContent).toContain('expired');
     expect(el('pairing-renew').hidden).toBe(false);
   });
 
+  it('утрата подтверждённого адреса скрывает показанный QR и исключает новый выпуск из интерфейса', async () => {
+    await enableRemote();
+    await ui.issuePairing();
+    expect(decodeQr().apiUrl).toBe(trustedAddress);
+    vi.mocked(tailscaleAddressAssigned).mockReturnValue(false);
+
+    await tick();
+    expect(el('pairing-details').hidden).toBe(true);
+    expect(el('pairing-address').textContent).toBe('');
+    expect(el('pairing-qr').src).toBe('');
+    expect(el('pairing-renew').hidden).toBe(true);
+    expect(el('pairing-status').textContent).toContain('REMOTE_ENABLED=true');
+    await expect(pairRemotely('invalid')).rejects.toMatchObject({ code: 'ECONNREFUSED' });
+    ui.closePairing();
+    calls.length = 0;
+    await ui.issuePairing();
+    expect(calls).toEqual(['GET /api/pairing']);
+  });
+
+  it('утрата адреса между проверкой и выпуском QR сохраняет действующий локальный код', async () => {
+    await enableRemote();
+    const { code } = await (await fetch(`${base}/api/pairing`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json();
+    intercept = (method) => {
+      if (method === 'POST') vi.mocked(tailscaleAddressAssigned).mockReturnValue(false);
+      return undefined;
+    };
+    await ui.issuePairing();
+    expect(el('pairing-qr').src).toBe('');
+    const paired = await fetch(`${base}/api/v1/pair`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code, name: 'Pixel' }),
+    });
+    expect(paired.status).toBe(200);
+  });
+
   it('закрытие отбрасывает запоздалый QR, повторный клик не создаёт второй запрос', async () => {
-    trustedAddress = 'http://100.100.10.20/api/v1';
+    await enableRemote();
     const pending = deferred<unknown>();
     intercept = (method) => method === 'POST' ? pending.promise : undefined;
     const opening = ui.issuePairing();
-    while (!calls.includes('POST /api/pairing')) await new Promise((resolve) => setTimeout(resolve, 1));
+    while (!calls.includes('POST /api/pairing?qr=true')) await new Promise((resolve) => setTimeout(resolve, 1));
     await ui.issuePairing();
     expect(calls.filter((call) => call === 'GET /api/pairing')).toHaveLength(1);
     ui.closePairing();
@@ -220,20 +284,20 @@ describe('панель: интерфейс устройств', () => {
     await ui.issuePairing();
     expect(el('pairing-status').textContent).toBe('Network error');
     expect(el('pairing-renew').disabled).toBe(false);
-    tick();
+    await tick();
     expect(el('pairing-status').textContent).toBe('Network error');
-    trustedAddress = 'http://100.100.10.20/api/v1';
+    await enableRemote();
     intercept = (method) => method === 'POST' ? Promise.reject(new Error('QR failed')) : undefined;
     await el('pairing-renew').click();
     expect(el('pairing-status').textContent).toBe('QR failed');
     expect(el('pairing-qr').src).toBe('');
-    tick();
+    await tick();
     expect(el('pairing-status').textContent).toBe('QR failed');
     intercept = undefined;
     await el('pairing-renew').click();
     expect(decodeQr().apiUrl).toBe(trustedAddress);
     expect(el('pairing-status').textContent).toBe(t('ru', 'ui.pairing.scan'));
-    tick();
+    await tick();
     expect(el('pairing-status').textContent).toBe(t('ru', 'ui.pairing.scan'));
     new DeviceStore(db).issue('Pixel');
     await ui.loadDevices();

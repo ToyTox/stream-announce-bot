@@ -25,7 +25,7 @@ export const en: Record<keyof typeof ru, string> = {
   'ui.pairing.scan': 'Scan the QR in the mobile app. A new QR replaces the previous one.',
   'ui.pairing.expires': 'Expires in {seconds} s',
   'ui.pairing.expired': 'Pairing code expired. Generate a new QR.',
-  'ui.pairing.unavailable': 'Pairing is not available yet: the API runs only on this computer. Phone connection will become available after secure remote access is configured (task #9).',
+  'ui.pairing.unavailable': 'Pairing is unavailable. Connect Tailscale on this computer, set REMOTE_ENABLED=true in .env, and restart the application. If the QR code is missing, check the logs.',
 
   'language.name': 'English',
   locale: 'en-US',

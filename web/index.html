@@ -901,6 +901,7 @@
   let pairingState = null;
   let pairingStatusKey = '';
   let pairingError = '';
+  let pairingChecking = false;
 
   function clearPairingImage() {
     $('pairing-details').hidden = true;
@@ -962,7 +963,7 @@
         renderPairing();
         return;
       }
-      const issued = await api('POST', '/api/pairing', {});
+      const issued = await api('POST', '/api/pairing?qr=true', {});
       if (request !== pairingRequest) return;
       if (!issued.apiUrl || !/^data:image\/png;base64,/.test(issued.qrDataUrl || '')) {
         pairingStatusKey = 'ui.pairing.unavailable';
@@ -986,6 +987,28 @@
         $('pairing-close').focus();
       }
     }
+  }
+
+  async function refreshPairing() {
+    if ($('pairing-panel').hidden) return;
+    renderPairing();
+    if (!pairingState || pairingChecking) return;
+    const request = pairingRequest;
+    pairingChecking = true;
+    try {
+      const capability = await api('GET', '/api/pairing');
+      if (capability.available) return;
+    } catch {
+      // Без ответа панели нельзя подтвердить, что показанный QR ещё доступен.
+    } finally {
+      pairingChecking = false;
+    }
+    if (request !== pairingRequest || !pairingState) return;
+    pairingState = null;
+    pairingStatusKey = 'ui.pairing.unavailable';
+    $('pairing-renew').hidden = true;
+    clearPairingImage();
+    renderPairing();
   }
 
   async function loadDevices() {
@@ -1059,7 +1082,7 @@
   });
   $('devices-refresh').addEventListener('click', () => { if (!devicesBusy) loadDevices(); });
   loaders.devices = loadDevices;
-  setInterval(() => { if (!$('pairing-panel').hidden) renderPairing(); }, 1000);
+  setInterval(refreshPairing, 1000);
 
   // ---------- Лог ----------
   let logSeq = 0;

@@ -64,7 +64,7 @@ export async function startApp(options: AppOptions): Promise<App> {
       panel = await startPanel(
         { runtime, env, envPath: options.envPath, defaults: options.defaults, version: options.version ?? packageVersion() },
         options.port ?? web.port,
-        { fallbackPort: options.fallbackPort }
+        { fallbackPort: options.fallbackPort, remoteEnabled: web.remoteEnabled }
       );
     }
   } catch (error) {
