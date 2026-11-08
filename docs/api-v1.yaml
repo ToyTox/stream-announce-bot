@@ -1,0 +1,1302 @@
+openapi: 3.1.2
+info:
+  title: API stream-announce-bot
+  version: '1'
+  description: |
+    Версионированный HTTP API для мобильного клиента. Маршруты локальной панели
+    находятся за пределами этого контракта.
+
+    ## Подключение
+
+    Локальный слушатель работает на 127.0.0.1. Допустимые значения Host —
+    `localhost:<порт>` и `127.0.0.1:<порт>`. Удалённый слушатель доступен,
+    если включён REMOTE_ENABLED, Tailscale подтвердил IPv4 узла на локальном
+    туннельном интерфейсе и удалось открыть фактический порт панели. Для него
+    нужен один заголовок Host со значением `<IPv4>:<порт>`. На порту 80
+    принимается также IPv4 без порта. Удалённый слушатель закрывается при
+    потере подтверждённого адреса.
+
+    Origin можно опустить. Переданное значение должно точно совпадать с
+    `http://` плюс одно из допустимых для этого входа значений Host. Отказ
+    по Host или Origin даёт 403 до учёта квот.
+
+    Машиночитаемое требование Bearer рассчитано на генерацию клиента для
+    удалённого входа. В OpenAPI требования авторизации задаются для всего
+    документа и отдельных операций, общих для обоих входов.
+
+    На удалённом входе действующий Bearer обязателен, в том числе для
+    запроса с того же компьютера. В запросе с loopback на локальном входе
+    Authorization можно опустить. Переданный заголовок проверяется.
+    Неподходящий, неизвестный или отозванный токен даёт 401. Если реестр
+    не открывается, Bearer тоже отклоняется с 401. Для удалённых PUT /text,
+    /links, /image и /settings токен повторно проверяется после чтения
+    тела, до записи и отправок. Исключение на обоих входах — POST /pair,
+    который игнорирует Authorization. На удалённом входе обмен проходит
+    только с точным request target `/api/v1/pair`, без query (даже пустого),
+    фрагмента или вариантов написания пути. На локальном входе маршрут
+    выбирается по pathname после разбора URL.
+
+    ## Квоты
+
+    Оба входа используют общие счётчики по всем операциям API в минутных
+    окнах. С действующим Bearer доступно 120 запросов на устройство в
+    реестре, остальные запросы учитываются по TCP-адресу клиента с лимитом
+    60. Пересылаемые заголовки с адресом клиента не учитываются. POST /pair
+    использует отдельный лимит 10 запросов на TCP-адрес независимо от Bearer.
+    У каждого счётчика до 4096 ключей на окно. При заполнении новые ключи
+    получают 429 до следующего окна, существующие продолжают расходовать
+    свои квоты.
+
+    429 имеет приоритет перед ответом об ошибке авторизации, проверкой
+    Content-Type, чтением тела и выполнением операции. Ответ содержит
+    локализованное поле error, Retry-After в целых секундах до сброса окна
+    и Cache-Control со значением no-store. При 429 код сопряжения не
+    проверяется и сохраняет свой обычный срок действия.
+
+    После проверки квоты запрос с действующим Bearer обновляет
+    lastUsedAt устройства до обработки операции.
+
+    ## Общие ответы
+
+    Для всех POST требуется Content-Type, начинающийся с `application/json`,
+    в том числе для операций без читаемого тела. При чтении JSON действует
+    предел 65 536 байт. Пустое тело или JSON без объекта обрабатывается
+    как отсутствие полей, включая массивы без именованных полей.
+    Синтаксическая ошибка JSON даёт 400 в операциях, которые читают тело.
+
+    Неизвестный метод или путь даёт 404 после общих проверок, если запрос
+    допущен к маршрутизации. На удалённом входе недопустимый сырой путь
+    отклоняется с 404 сразу после проверок Host и Origin, до Bearer и квот.
+    Например, абсолютный URL, фрагмент, процентное кодирование и сегменты
+    `.` или `..` в пути не принимаются. Неизвестный путь допустимого
+    вида под /api/v1 и неизвестный метод расходуют обычную квоту.
+    Для неизвестного POST при неверном Content-Type возможен 415 до
+    маршрутизации.
+
+    JSON-ответы имеют Content-Type `application/json; charset=utf-8` и
+    Cache-Control `no-store`. Ошибки HTTP содержат объект с полем error.
+    Явный поддерживаемый APP_LANGUAGE имеет приоритет. В автоматическом
+    режиме используется код языка из первой локали Accept-Language
+    без учёта веса. При отсутствии локали используется русский, при
+    неизвестном коде языка — английский. Тексты внешних и неожиданных
+    внутренних ошибок могут передаваться в исходном виде.
+servers:
+  - url: 'http://127.0.0.1:{port}/api/v1'
+    description: |
+      Локальный вход. Также допустим localhost с тем же портом.
+      Для запросов с loopback Authorization можно опустить. Переданный
+      заголовок проверяется, а при сопряжении игнорируется.
+    variables:
+      port:
+        default: '3210'
+        description: Фактический порт панели.
+  - url: 'http://{tailscaleIp}:{port}/api/v1'
+    description: |
+      Удалённый вход при наличии действующего слушателя Tailscale.
+      Действующий Bearer обязателен для всех операций, кроме обмена
+      по точному `POST /api/v1/pair`.
+    variables:
+      tailscaleIp:
+        default: '100.64.0.1'
+        description: Условный адрес. Подставьте подтверждённый IPv4 узла из адреса подключения.
+      port:
+        default: '3210'
+        description: Фактический порт панели на том же узле.
+security:
+  - deviceBearer: []
+paths:
+  /info:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    get:
+      operationId: getInfo
+      summary: Узнать версию API и приложения
+      responses:
+        '200':
+          description: Версии API и приложения.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [apiVersion, version]
+                properties:
+                  apiVersion:
+                    const: 1
+                  version:
+                    type: string
+                    description: Версия приложения. Может быть пустой строкой.
+              example: {apiVersion: 1, version: '1.2.3'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /status:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    get:
+      operationId: getStatus
+      summary: Получить статус бота и эфира
+      responses:
+        '200':
+          $ref: '#/components/responses/Status'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /logs:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    get:
+      operationId: getLogs
+      summary: Получить строки лога
+      description: |
+        Сервер хранит до 300 последних строк в памяти процесса и возвращает их
+        по возрастанию seq. Нумерация начинается заново при запуске процесса.
+      parameters:
+        - name: after
+          in: query
+          description: |
+            Последний просмотренный seq. Ответ содержит строки с seq строго
+            больше этого значения. Сервер берёт первое значение параметра
+            и преобразует его через JavaScript Number. Пропущенное, пустое
+            или нечисловое значение означает 0.
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Строки после курсора, в том числе пустой массив.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [lines]
+                properties:
+                  lines:
+                    type: array
+                    maxItems: 300
+                    items:
+                      $ref: '#/components/schemas/LogLine'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /preview:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    get:
+      operationId: getPreview
+      summary: Получить предпросмотр анонса и итога эфира
+      description: |
+        Предпросмотр использует язык анонсов. При наличии источника открытого
+        эфира берутся его название и игра, иначе используются демонстрационные
+        данные. В анонс попадает текущая текстовая врезка. Для анонса берутся
+        отмеченные статические ссылки, а если таких нет — ссылки на настроенные
+        каналы. Итог использует ссылки на каналы и прошедшее время открытого
+        эфира либо демонстрационную длительность 2 ч 47 мин.
+      responses:
+        '200':
+          description: Тексты с HTML-разметкой Telegram и признак картинки.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [announce, finished, photo]
+                properties:
+                  announce:
+                    type: string
+                  finished:
+                    type: string
+                  photo:
+                    type: string
+                    enum: [custom, twitch]
+                    description: custom при наличии своей картинки, иначе twitch.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+  /pair:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    post:
+      operationId: pairDevice
+      summary: Обменять одноразовый код на токен устройства
+      security: []
+      description: |
+        Authorization игнорируется на обоих входах. Для удалённого обмена
+        нужен точный POST /api/v1/pair без query, фрагмента и нормализации пути.
+
+        Одновременно действует один код на оба входа. Он живёт 5 минут
+        и погашается при обмене, выпуске нового кода или перезапуске.
+        Пять неверных обменов аннулируют действующий код. Ошибки имени
+        или формы тела и отказ по квоте код не расходуют. Неизвестный,
+        неверно сформированный, просроченный и уже использованный коды
+        получают одинаковый 401, если поле code передано строкой.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name]
+              properties:
+                code:
+                  type: string
+                  description: Код из сопряжения. 16 случайных байт в base64url без дополнения (22 символа). Передаётся в выданном виде.
+                name:
+                  type: string
+                  description: Имя устройства. После trim требуется от 1 до 64 кодовых единиц UTF-16.
+      responses:
+        '200':
+          description: |
+            Новое устройство и открытый токен. Токен возвращается только при
+            обмене. В реестре хранится его SHA-256, а в данных устройства хэша нет.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairingResult'
+        '400':
+          $ref: '#/components/responses/BadPairingRequest'
+        '401':
+          $ref: '#/components/responses/BadPairingCode'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/BadRemotePath'
+        '413':
+          $ref: '#/components/responses/JsonTooLarge'
+        '415':
+          $ref: '#/components/responses/JsonExpected'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/RegistryUnavailable'
+  /probe:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    post:
+      operationId: probeNow
+      summary: Выполнить цикл бота сейчас
+      description: |
+        Запускает обычный цикл бота или дожидается уже выполняющегося.
+        Цикл проверяет площадки, обновляет состояние эфира и при выполнении
+        условий отправки может доставить реальный анонс или итог эфира
+        в настроенные Telegram и Discord.
+
+        При DRY_RUN цикл сохраняет изменения состояния эфира, а реальные
+        отправки пропускает. Ответ содержит статус после цикла. Для получения
+        текущего статуса без запуска цикла используйте `GET /api/v1/status`.
+      requestBody:
+        $ref: '#/components/requestBodies/IgnoredJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/Status'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/JsonExpected'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+  /test-message:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    post:
+      operationId: sendTestMessage
+      summary: Отправить короткое тестовое сообщение
+      description: |
+        Отправляет сообщение на языке запроса во все настроенные каналы
+        доставки, в том числе при DRY_RUN. Telegram и Discord обрабатываются
+        независимо. Ошибка отправки в одном или обоих каналах остаётся
+        результатом с HTTP 200.
+      requestBody:
+        $ref: '#/components/requestBodies/IgnoredJson'
+      responses:
+        '200':
+          description: |
+            ok равен true, когда все отправки успешны. Если каналы не
+            настроены, возвращается ok со значением true и пустой results.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TestMessageResult'
+              example:
+                ok: false
+                results:
+                  - {channel: telegram, label: Telegram, ok: true}
+                  - {channel: discord, label: Discord, ok: false, error: 'Сервис недоступен'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/JsonExpected'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+  /test-announce/telegram:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    post:
+      operationId: sendTelegramTestAnnouncement
+      summary: Отправить тестовый анонс в Telegram
+      description: |
+        Отправляет анонс без звука с пометкой о тесте и текущими данными
+        предпросмотра. Отправка выполняется и при DRY_RUN, состояние эфира
+        и запись о его доставке не меняются.
+      requestBody:
+        $ref: '#/components/requestBodies/IgnoredJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ChannelNotConfigured'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/JsonExpected'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/TestAnnouncementFailed'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+  /test-announce/discord:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    post:
+      operationId: sendDiscordTestAnnouncement
+      summary: Отправить тестовый анонс в Discord
+      description: |
+        Отправляет анонс с пометкой о тесте и текущими данными предпросмотра.
+        Отправка выполняется и при DRY_RUN, состояние эфира и запись о его
+        доставке не меняются.
+      requestBody:
+        $ref: '#/components/requestBodies/IgnoredJson'
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '400':
+          $ref: '#/components/responses/ChannelNotConfigured'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/JsonExpected'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/TestAnnouncementFailed'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+  /text:
+    description: |
+      После первой зарегистрированной доставки анонса эфира сохранённая
+      врезка автоматически сбрасывается, в том числе при регистрации
+      доставки в режиме DRY_RUN. После сброса `GET /api/v1/text` возвращает
+      `text: null`.
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    get:
+      operationId: getText
+      summary: Получить текстовую врезку
+      responses:
+        '200':
+          $ref: '#/components/responses/Text'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+    put:
+      operationId: putText
+      summary: Заменить или сбросить текстовую врезку
+      description: |
+        Сервер сохраняет строку после trim. Пустая строка, отсутствующее
+        поле, null и любое нестроковое значение сбрасывают врезку.
+        PUT читает JSON без проверки Content-Type.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                text:
+                  description: Строка для сохранения. Остальные значения означают сброс.
+                  examples: ['Сегодня финал', null]
+      responses:
+        '200':
+          $ref: '#/components/responses/Text'
+        '400':
+          $ref: '#/components/responses/BadJson'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/JsonTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+    delete:
+      operationId: deleteText
+      summary: Сбросить текстовую врезку
+      responses:
+        '200':
+          description: Врезка сброшена.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [text]
+                properties:
+                  text:
+                    type: 'null'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+  /links:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    get:
+      operationId: getLinks
+      summary: Получить статические ссылки
+      responses:
+        '200':
+          $ref: '#/components/responses/Links'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+    put:
+      operationId: putLinks
+      summary: Заменить весь список статических ссылок
+      description: |
+        Порядок сохраняется, пустой массив очищает список. Ошибка в любой
+        записи отклоняет весь список. Оформленный HTML-блок ссылок с
+        always: true должен укладываться в 724 кодовые единицы UTF-16
+        (1024 минус резерв 300). Учитываются разметка, экранирование и
+        переводы строк. PUT читает JSON без проверки Content-Type.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [links]
+              properties:
+                links:
+                  type: array
+                  maxItems: 20
+                  items:
+                    $ref: '#/components/schemas/LinkInput'
+            example:
+              links:
+                - {label: Канал, url: 'https://example.com/channel', always: true}
+      responses:
+        '200':
+          $ref: '#/components/responses/Links'
+        '400':
+          $ref: '#/components/responses/BadLinks'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/JsonTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+  /settings:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    get:
+      operationId: getSettings
+      summary: Получить поля настроек
+      description: |
+        Доступно и при остановленном боте. Подписи, группы, подсказки и
+        подписи вариантов локализованы. У секретных полей отсутствует
+        value, включая маску, и возвращается isSet.
+      responses:
+        '200':
+          description: Поля настроек и ошибка конфигурации или null.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fields, configError]
+                properties:
+                  fields:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SettingField'
+                  configError:
+                    type: [string, 'null']
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: putSettings
+      summary: Изменить несекретные настройки
+      description: |
+        Принимает частичный набор полей в values. Строки обрезаются по краям,
+        true и false приводятся к строкам. Числа для полей с type: number
+        передаются строками. Неизвестные ключи и значения других типов
+        пропускаются. Отсутствующий или не объектный values даёт пустой
+        набор изменений. Любой секретный ключ отклоняет весь запрос, в том
+        числе при пустом или null-значении.
+
+        Совпадение с текущим значением, а для незаданного поля совпадение
+        с его placeholder, считается отсутствием изменений. Сервер проверяет
+        конфигурацию до записи. Если есть изменения, он записывает их,
+        перезапускает бота и включает configError в ответ. При отсутствии
+        изменений перезапуска нет и поля configError нет. Работающий бот
+        для этой операции не требуется. PUT читает JSON без проверки
+        Content-Type.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                values:
+                  propertyNames:
+                    not:
+                      $ref: '#/components/schemas/SecretSettingKey'
+            example:
+              values: {VKVIDEO_REPLAY_URL: 'https://example.com/replays', ANNOUNCE_END: true}
+      responses:
+        '200':
+          description: Результат сохранения.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsWriteResult'
+              examples:
+                unchanged:
+                  value: {ok: true, changed: []}
+                saved:
+                  value: {ok: true, changed: [VKVIDEO_REPLAY_URL], configError: null}
+        '400':
+          $ref: '#/components/responses/BadSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/JsonTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /image:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    put:
+      operationId: putImage
+      summary: Загрузить свою картинку анонса
+      description: |
+        Тело содержит сырые байты картинки. Предел 10 МиБ (10 485 760 байт).
+        Проверка на стороне API ограничена длиной тела и типом из Content-Type
+        до точки с запятой с обрезкой пробелов и с учётом регистра. При
+        настроенных Telegram и администраторе сервер отправляет фото в личный
+        чат администратора, получает file_id и сохраняет локальную копию.
+        В остальных случаях сохраняется только локальный файл.
+      requestBody:
+        content:
+          image/jpeg:
+            schema:
+              maxLength: 10485760
+          image/png:
+            schema:
+              maxLength: 10485760
+          image/webp:
+            schema:
+              maxLength: 10485760
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/ImageTooLarge'
+        '415':
+          $ref: '#/components/responses/ImageTypeExpected'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/ImageUploadFailed'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+    delete:
+      operationId: deleteImage
+      summary: Сбросить свою картинку анонса
+      responses:
+        '200':
+          $ref: '#/components/responses/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+  /image/file:
+    parameters:
+      - $ref: '#/components/parameters/Host'
+      - $ref: '#/components/parameters/Origin'
+      - $ref: '#/components/parameters/AcceptLanguage'
+    get:
+      operationId: getImageFile
+      summary: Скачать свою картинку анонса
+      description: |
+        Возвращает локальную копию в сохранённом типе. Если копии нет,
+        сервер пробует загрузить фото по file_id из Telegram и отдаёт его
+        как image/jpeg.
+      responses:
+        '200':
+          description: Сырые байты картинки.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            image/jpeg: {}
+            image/png: {}
+            image/webp: {}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NoImage'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/ImageDownloadFailed'
+        '503':
+          $ref: '#/components/responses/BotUnavailable'
+components:
+  securitySchemes:
+    deviceBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: base64url
+      description: Токен устройства из ответа сопряжения. 32 случайных байта в base64url без дополнения (43 символа).
+  parameters:
+    Host:
+      name: Host
+      in: header
+      required: true
+      description: Адрес и порт выбранного слушателя. Допустимые значения указаны в разделе «Подключение».
+      schema:
+        type: string
+    Origin:
+      name: Origin
+      in: header
+      description: Необязательный HTTP Origin из списка для выбранного слушателя.
+      schema:
+        type: string
+    AcceptLanguage:
+      name: Accept-Language
+      in: header
+      description: Первая локаль выбирает язык ответа в автоматическом режиме.
+      schema:
+        type: string
+      example: ru-RU
+  headers:
+    NoStore:
+      required: true
+      schema:
+        type: string
+        const: no-store
+  requestBodies:
+    IgnoredJson:
+      description: Тело можно опустить. Content-Type application/json обязателен, содержимое сервер не читает.
+      content:
+        application/json: {}
+  responses:
+    Status:
+      description: Статус работающего или остановленного бота.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Status'
+    Text:
+      description: Текущая врезка. Если она сброшена, поле text содержит null.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [text]
+            properties:
+              text:
+                type: [string, 'null']
+    Links:
+      description: Текущий список ссылок в сохранённом порядке.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [links]
+            properties:
+              links:
+                type: array
+                maxItems: 20
+                items:
+                  $ref: '#/components/schemas/Link'
+    Ok:
+      description: Операция выполнена.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok]
+            properties:
+              ok:
+                const: true
+    BadJson:
+      description: Синтаксическая ошибка JSON.
+      headers: &errorHeaders
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+      content: &errorContent
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadPairingRequest:
+      description: Некорректный JSON, отсутствуют строковые code или name, либо имя после trim пустое или длиннее 64 кодовых единиц UTF-16.
+      headers: *errorHeaders
+      content: *errorContent
+    BadPairingCode:
+      description: Код не подходит, истёк, аннулирован или уже погашен. Ответ одинаков для всех случаев.
+      headers: *errorHeaders
+      content: *errorContent
+    BadLinks:
+      description: Некорректный JSON, недопустимый список или отмеченные ссылки выходят за предел подписи.
+      headers: *errorHeaders
+      content: *errorContent
+    BadSettings:
+      description: Некорректный JSON, секретный ключ в values или недопустимая итоговая конфигурация.
+      headers: *errorHeaders
+      content: *errorContent
+    ChannelNotConfigured:
+      description: Выбранный канал доставки не настроен.
+      headers: *errorHeaders
+      content: *errorContent
+    Unauthorized:
+      description: Нужен действующий токен устройства. На удалённой записи возможен отзыв токена во время чтения тела.
+      headers: *errorHeaders
+      content: *errorContent
+    Forbidden:
+      description: Недопустимый Host или Origin.
+      headers: *errorHeaders
+      content: *errorContent
+    BadRemotePath:
+      description: Сырой путь запроса недопустим на удалённом входе, например у обмена есть query или фрагмент.
+      headers: *errorHeaders
+      content: *errorContent
+    NoImage:
+      description: Своя картинка отсутствует или доступной копии файла нет.
+      headers: *errorHeaders
+      content: *errorContent
+    JsonTooLarge:
+      description: Тело JSON превысило 65 536 байт.
+      headers: *errorHeaders
+      content: *errorContent
+    ImageTooLarge:
+      description: Тело картинки превысило 10 485 760 байт.
+      headers: *errorHeaders
+      content: *errorContent
+    JsonExpected:
+      description: Для POST нужен Content-Type, начинающийся с application/json.
+      headers: *errorHeaders
+      content: *errorContent
+    ImageTypeExpected:
+      description: Для загрузки нужен Content-Type image/jpeg, image/png или image/webp.
+      headers: *errorHeaders
+      content: *errorContent
+    RateLimited:
+      description: Квота исчерпана до конца текущего окна.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/NoStore'
+        Retry-After:
+          required: true
+          description: Секунды до конца окна, округлённые вверх.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 60
+      content: *errorContent
+    InternalError:
+      description: Необработанная ошибка сервера.
+      headers: *errorHeaders
+      content: *errorContent
+    TestAnnouncementFailed:
+      description: Сбой подготовки или отправки тестового анонса.
+      headers: *errorHeaders
+      content: *errorContent
+    ImageUploadFailed:
+      description: |
+        Сбой загрузки в Telegram или отсутствие file_id в его ответе.
+        При chat_not_found к тексту ошибки добавляется локализованная подсказка.
+      headers: *errorHeaders
+      content: *errorContent
+    ImageDownloadFailed:
+      description: Сбой получения картинки из Telegram или сохранения скачанной копии.
+      headers: *errorHeaders
+      content: *errorContent
+    BotUnavailable:
+      description: Бот не запущен. В сообщении может быть причина из конфигурации.
+      headers: *errorHeaders
+      content: *errorContent
+    RegistryUnavailable:
+      description: Не удалось открыть реестр устройств при сопряжении.
+      headers: *errorHeaders
+      content: *errorContent
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Сообщение для пользователя.
+    Status:
+      oneOf:
+        - $ref: '#/components/schemas/StoppedStatus'
+        - $ref: '#/components/schemas/RunningStatus'
+    StoppedStatus:
+      type: object
+      required: [version, running, configError]
+      additionalProperties: false
+      properties:
+        version:
+          type: string
+        running:
+          const: false
+        configError:
+          type: [string, 'null']
+          description: Причина остановки, если известна.
+    RunningStatus:
+      type: object
+      required: [version, running, configError, dryRun, telegramSet, adminSet, discordSet, broadcast, platforms, text, hasImage]
+      properties:
+        version:
+          type: string
+        running:
+          const: true
+        configError:
+          type: 'null'
+        dryRun:
+          type: boolean
+        telegramSet:
+          type: boolean
+        adminSet:
+          type: boolean
+        discordSet:
+          type: boolean
+        broadcast:
+          description: Открытый эфир или null.
+          anyOf:
+            - $ref: '#/components/schemas/Broadcast'
+            - type: 'null'
+        platforms:
+          type: array
+          description: Настроенные платформы со ссылкой на канал.
+          items:
+            $ref: '#/components/schemas/PlatformStatus'
+        text:
+          type: [string, 'null']
+          description: Текущая текстовая врезка.
+        hasImage:
+          type: boolean
+          description: Есть доступная своя картинка или идентификатор фото при работающем клиенте Telegram.
+    Broadcast:
+      type: object
+      required: [startedAt, announcedAt, chatId, messageId, messageUrl, platforms, deliveries]
+      properties:
+        startedAt:
+          $ref: '#/components/schemas/UnixMillis'
+        announcedAt:
+          type: [integer, 'null']
+          format: int64
+          description: Unix-время анонса в миллисекундах, если он уже состоялся.
+        chatId:
+          type: [string, 'null']
+          description: Чат отправленного анонса в Telegram.
+        messageId:
+          type: [integer, 'null']
+          description: Идентификатор отправленного сообщения в Telegram.
+        messageUrl:
+          type: [string, 'null']
+          description: Ссылка при наличии messageId и chatId с префиксом -100, иначе null.
+        platforms:
+          type: array
+          description: Платформы, на которых эфир сейчас идёт.
+          items:
+            $ref: '#/components/schemas/Platform'
+        deliveries:
+          type: array
+          items:
+            type: object
+            required: [channel, label, state]
+            properties:
+              channel:
+                $ref: '#/components/schemas/DeliveryChannel'
+              label:
+                type: string
+              state:
+                type: string
+                enum: [pending, sent, failed]
+    Platform:
+      type: string
+      enum: [twitch, youtube, vkvideo]
+    PlatformStatus:
+      type: object
+      required: [platform, label, url, state, checkedAt]
+      properties:
+        platform:
+          $ref: '#/components/schemas/Platform'
+        label:
+          type: string
+        url:
+          type: string
+        state:
+          type: string
+          enum: [pending, live, offline, error]
+        checkedAt:
+          type: [integer, 'null']
+          format: int64
+          description: Unix-время последней проверки в миллисекундах или null до первой проверки.
+        error:
+          type: string
+          description: Текст ошибки проверки. Поле отсутствует, когда ошибки нет.
+    DeliveryChannel:
+      type: string
+      enum: [telegram, discord]
+    LogLine:
+      type: object
+      required: [seq, time, level, text]
+      properties:
+        seq:
+          type: integer
+          minimum: 1
+        time:
+          $ref: '#/components/schemas/UnixMillis'
+        level:
+          type: string
+          enum: [info, warn, error]
+        text:
+          type: string
+    UnixMillis:
+      type: integer
+      format: int64
+      description: Unix-время в миллисекундах.
+    PairingResult:
+      type: object
+      required: [device, token]
+      properties:
+        device:
+          type: object
+          required: [id, name, createdAt, lastUsedAt, revokedAt]
+          additionalProperties: false
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+              minLength: 1
+              maxLength: 64
+            createdAt:
+              $ref: '#/components/schemas/UnixMillis'
+            lastUsedAt:
+              type: 'null'
+            revokedAt:
+              type: 'null'
+        token:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{43}$'
+    TestMessageResult:
+      type: object
+      required: [ok, results]
+      properties:
+        ok:
+          type: boolean
+        results:
+          type: array
+          maxItems: 2
+          items:
+            type: object
+            required: [channel, label, ok]
+            properties:
+              channel:
+                $ref: '#/components/schemas/DeliveryChannel'
+              label:
+                type: string
+                enum: [Telegram, Discord]
+              ok:
+                type: boolean
+              error:
+                type: string
+                description: Сообщение об ошибке доставки.
+            if:
+              properties:
+                ok:
+                  const: false
+            then:
+              required: [error]
+            else:
+              properties:
+                error: false
+      if:
+        properties:
+          results:
+            contains:
+              properties:
+                ok:
+                  const: false
+      then:
+        properties:
+          ok:
+            const: false
+      else:
+        properties:
+          ok:
+            const: true
+    LinkInput:
+      type: object
+      required: [label, url]
+      properties:
+        label:
+          type: string
+          description: Название. От 1 до 64 кодовых единиц UTF-16 после trim.
+        url:
+          type: string
+          description: Полный HTTP(S)-адрес с именем хоста, без пробельных символов и до 512 кодовых единиц UTF-16 после trim.
+        always:
+          type: boolean
+          default: false
+          description: Всегда включать эту ссылку в анонс.
+    Link:
+      allOf:
+        - $ref: '#/components/schemas/LinkInput'
+        - type: object
+          required: [always]
+          properties:
+            label:
+              minLength: 1
+              maxLength: 64
+            url:
+              minLength: 1
+              maxLength: 512
+    SecretSettingKey:
+      type: string
+      enum: [TELEGRAM_BOT_TOKEN, DISCORD_WEBHOOK_URL, TWITCH_CLIENT_SECRET, YOUTUBE_API_KEY]
+    SettingField:
+      type: object
+      required: [key, group, label, type, isSet]
+      properties:
+        key:
+          type: string
+          description: Ключ настройки для values.
+        group:
+          type: string
+          description: Локализованное имя группы.
+        label:
+          type: string
+        type:
+          type: string
+          enum: [text, number, bool, select]
+        hint:
+          type: string
+        secret:
+          const: true
+          description: Присутствует у секретных полей.
+        options:
+          type: array
+          items:
+            type: object
+            required: [value, label]
+            properties:
+              value:
+                type: string
+              label:
+                type: string
+        placeholder:
+          type: string
+          description: Значение по умолчанию, если оно предусмотрено для поля.
+        isSet:
+          type: boolean
+          description: Значение настройки задано непустой строкой после trim.
+        value:
+          type: string
+          description: Текущее несекретное значение после trim или пустая строка.
+      if:
+        properties:
+          key:
+            $ref: '#/components/schemas/SecretSettingKey'
+      then:
+        required: [secret]
+        properties:
+          value: false
+      else:
+        required: [value]
+        properties:
+          secret: false
+    SettingsWriteResult:
+      oneOf:
+        - type: object
+          required: [ok, changed]
+          additionalProperties: false
+          properties:
+            ok:
+              const: true
+            changed:
+              type: array
+              maxItems: 0
+        - type: object
+          required: [ok, changed, configError]
+          properties:
+            ok:
+              const: true
+            changed:
+              type: array
+              minItems: 1
+              items:
+                type: string
+            configError:
+              type: [string, 'null']
