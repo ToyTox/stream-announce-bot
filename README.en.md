@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.md)
 
-The bot watches Twitch, YouTube and VK Live and, when you start a stream, posts a single announcement with links to every platform you are live on to a Telegram group and/or a Discord channel. OBS starts the stream everywhere at once, so instead of several notifications you get one message. When the stream ends, the bot sends a separate message with the duration and links to the recordings.
+The bot watches the channels you configure on Twitch, YouTube and VK Live. It sends one announcement per stream to your Telegram group, Discord channel, or both, depending on your settings. If you stream to several platforms, for example with OBS, the links can go in a single announcement. When the stream ends, the bot can send a separate message with the duration and links to the channels where viewers can find recordings.
 
 You can manage the bot from the app window or with commands in a private chat on Telegram. Discord has no commands: it only receives messages. Telegram is optional if a Discord webhook is set: then the bot announces only to Discord and is managed through the panel.
 
@@ -12,9 +12,9 @@ Download an installer from the [Releases](https://github.com/ToyTox/stream-annou
 
 **Mac**
 
-1. Download `stream-announce-<version>-arm64.dmg` for a Mac on Apple Silicon (M1 and newer) or `stream-announce-<version>-x64.dmg` for Intel. To find out your processor: the  menu → "About This Mac".
+1. Download `stream-announce-<version>-arm64.dmg` for a Mac with Apple silicon (M1 and later) or `stream-announce-<version>-x64.dmg` for Intel. To identify your processor, choose "About This Mac" from the Apple menu ().
 2. Open the `.dmg` and drag the app to "Applications".
-3. The app is signed with a free signature without a developer certificate, so on the first launch macOS will say it cannot verify the app. Close the window, open "System Settings → Privacy & Security", scroll down to the message about the app and click "Open Anyway". You only need to do this once.
+3. The app uses an ad hoc signature, so macOS may block it on first launch. After trying to open the app, go to "System Settings → Privacy & Security", scroll down to the message about the app, click "Open Anyway" and confirm. [Apple Support](https://support.apple.com/en-us/102445)
 
 **Windows**
 
@@ -25,36 +25,81 @@ On the first launch the window opens on the "Settings" tab. After that the app l
 
 ## Bot setup
 
-The Telegram block (steps 1–5) is optional if `DISCORD_WEBHOOK_URL` is set (step 9). Telegram is enabled when both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set; only one of the two is an error. At least one delivery destination is required: Telegram or Discord.
+On the "Settings" tab, configure at least one delivery destination (Telegram or Discord) and at least one streaming platform to monitor (Twitch, YouTube, or VK Live). The Telegram, Discord, Twitch, YouTube, and VK Live groups each have a "How to get it" guide.
 
-1. **Telegram bot**: send `@BotFather` the `/newbot` command and get a token — this is `TELEGRAM_BOT_TOKEN`.
-2. **Group**: add the bot to the group. Admin rights are not required unless members are not allowed to write in the group.
-3. **Group ID** (`TELEGRAM_CHAT_ID`): copy a link to any message in the group — `t.me/c/2241331974/…` — and put `-100` before the number: `-1002241331974`.
-4. **Topic** (`TELEGRAM_TOPIC_ID`): if topics are enabled in the group, the topic ID is the first number after the group ID in a link to a message from that topic. For the main topic (General, even renamed) leave the field empty.
-5. **Your user ID** (`TELEGRAM_ADMIN_ID`): message `@userinfobot`, and it will reply with your ID. Then send `/start` to your bot — otherwise it cannot write to you privately.
-6. **Twitch**: create an app at [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps) (Redirect URL — `https://localhost`, client type — "Confidential") and take the Client ID and Client Secret. The login is as in the address `twitch.tv/<login>`.
-7. **YouTube**: the channel ID like `UC…` is at [youtube.com/account_advanced](https://www.youtube.com/account_advanced). The `@…` handle will not work.
-8. **VK Live**: the channel name from the address `live.vkvideo.ru/<name>`. For the recordings link, put the channel on vkvideo.ru into `VKVIDEO_REPLAY_URL`.
-9. **Discord** (optional if Telegram is configured): Server Settings → Integrations → Webhooks → New Webhook → choose the channel → "Copy Webhook URL". An address like `https://discord.com/api/webhooks/<id>/<token>` is `DISCORD_WEBHOOK_URL`. The address contains a token: do not show it to anyone.
-10. **Check**: on the "Status" tab click "Connection check": the test goes to every configured destination and the result is shown for each.
+### Delivery destinations
 
-Enter the values on the "Settings" tab of the panel. The minimum to start: one delivery destination (Telegram or Discord) and one stream platform (Twitch, YouTube or VK Live). Each group there also has a collapsed "How to get it" guide.
+- **Telegram.** Send `/newbot` to `@BotFather` and enter the resulting token in `TELEGRAM_BOT_TOKEN`. Add the bot to the group and give it permission to post. Delivery requires the token and `TELEGRAM_CHAT_ID`. Leave both fields empty if you only use Discord.
+- **Discord.** Open "Server Settings → Integrations → Webhooks → New Webhook", choose the channel and click "Copy Webhook URL". Set `DISCORD_WEBHOOK_URL` to the resulting address, which looks like `https://discord.com/api/webhooks/<id>/<token>`. Keep it secret.
+
+**Find `TELEGRAM_CHAT_ID`.** If the supergroup has a message link like `t.me/c/2241331974/…`, add `1000000000000` to the first number after `t.me/c/` and put a minus sign in front. The result in this example is `-1002241331974`. [Message links](https://core.telegram.org/api/links#message-links) · [ID format](https://core.telegram.org/api/bots/ids)
+
+For a basic group or a group without a `t.me/c/…` link, get the ID through the Telegram Bot API. Fully exit the app using "Quit" in the icon menu. This method requires a bot with no active webhook and no other running client receiving updates with the same token. Send `/start@<bot_username>` in the target group, using the bot's username without angle brackets. Telegram delivers this addressed command even in privacy mode. [How bots receive messages](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get)
+
+Run the block for your system and enter the token when prompted. The prompt hides your input. The token stays out of command history, and the `getUpdates` request goes directly to Telegram over HTTPS.
+
+**macOS — Terminal**
+
+```sh
+(
+  printf 'Bot token: '
+  IFS= read -r -s telegram_bot_token || exit 1
+  printf '\n'
+  printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' "$telegram_bot_token" |
+    curl --disable --silent --show-error --config -
+)
+```
+
+**Windows — PowerShell**
+
+```powershell
+& {
+  $telegramBotToken = [pscredential]::new('bot', (Read-Host 'Bot token' -AsSecureString)).GetNetworkCredential().Password
+  ('url = "https://api.telegram.org/bot{0}/getUpdates"' -f $telegramBotToken) |
+    curl.exe --disable --silent --show-error --config -
+}
+```
+
+In the `result` array, match the command you just sent by its `message.text`, send time `message.date` (Unix time in seconds), and group name `message.chat.title`. Reopen the app and copy the full `message.chat.id`, including the minus sign and every digit, into `TELEGRAM_CHAT_ID`. The request reads unconfirmed updates using Telegram's current filter. The app's filter includes `message`. If the response contains 100 older updates, wait for them to expire and send the command again. [getUpdates method](https://core.telegram.org/bots/api#getupdates)
+
+### Streaming platforms
+
+- **Twitch.** Fill in all three fields (`TWITCH_LOGIN`, `TWITCH_CLIENT_ID`, and `TWITCH_CLIENT_SECRET`) or leave the whole block empty. Take the login from `twitch.tv/<login>`. To get the Client ID and Client Secret, create an app with `https://localhost` as the redirect URL and "Confidential" as the client type. [Twitch Developer Console](https://dev.twitch.tv/console/apps)
+- **YouTube.** Enter the channel ID beginning with `UC` in `YOUTUBE_CHANNEL_ID`. [Find your channel ID](https://support.google.com/youtube/answer/3250431)
+- **VK Live.** Enter the channel name from `live.vkvideo.ru/<name>` in `VKVIDEO_CHANNEL`.
+
+### Optional fields
+
+- `TELEGRAM_TOPIC_ID` sends messages to a specific topic. Copy a link to a message in that topic. If the link has a `thread` parameter, use its value (`42` in `t.me/c/2241331974/357?thread=42`). If the topic has its own path segment, use the number before the message ID (`42` in `t.me/c/2241331974/42/357`). In both examples, `357` is the message ID. Leave the field empty for the main topic (General). [Telegram message link formats](https://core.telegram.org/api/links#message-links)
+- `TELEGRAM_ADMIN_ID` enables bot commands and private chat features, including uploading a preview. The bot token and group ID are enough for group delivery. To enable private chat, get your user ID from `@userinfobot`, enter it in the settings, and send `/start` to your bot.
+- With `YOUTUBE_API_KEY` set, the bot makes one `search.list` call per check. At the default one-minute interval, the standard quota of 100 calls per day lasts about 100 minutes. When the quota runs out, the panel shows YouTube check errors and the bot keeps using the API. For continuous polling at the default interval, leave the key empty unless you have a higher quota. With an empty key, the bot reads the channel's `/live` page. [YouTube Data API quotas](https://developers.google.com/youtube/data/determine_quota_cost)
+- `VKVIDEO_REPLAY_URL` adds a link to the channel with recordings on `vkvideo.ru`. See [What the messages look like](#what-the-messages-look-like) for when it appears.
+
+After saving your settings, open "Status" and click "Connection check". The panel sends a test message to each configured destination and shows the results separately.
 
 ## Control panel
 
 | Tab | What is there |
 |-----|---------------|
-| Status | Whether you are live, whether the announcement was sent (with a link to the message), the state of each platform and check errors. The "Check now", "Connection check", "Test announcement to Telegram" and "Test announcement to Discord" buttons (a real announcement marked "🧪 Test" sent only to the chosen platform; silent in Telegram); buttons of destinations that are not configured are hidden |
-| Message | The text for the announcement (like `/text`), your own list of links (including platforms the bot does not track; links marked "always in the announcement" replace the links to the platforms that are live), your own preview — uploading an image from the computer, a preview of the announcement and of the stream-ended message |
-| Settings | All parameters as a form. Secrets are shown masked, an empty field means "do not change". Saving validates the values and restarts the bot without a repeated announcement. The "Import .env…" button replaces the settings with a whole file |
-| Devices | Name, connection date, last use and state of each device. "Disconnect" revokes access, and "Connect phone" shows a QR code when the API is available over Tailscale |
+| Status | Current stream, announcement delivery, platform status and check errors. The "open in Telegram" link appears for the current stream once its announcement has been sent to a Telegram supergroup. Buttons include "Check now", "Connection check", "Test announcement to Telegram" and "Test announcement to Discord". Each configured destination has a test announcement button |
+| Message | Announcement text (like `/text`), a list of links with an "Always in announcement" option, a custom image upload, and previews of the announcement and stream summary |
+| Settings | Bot settings. Secrets are masked, and leaving a secret field empty keeps its current value. Saving validates the settings and restarts the bot without repeating the announcement. "Import .env…" validates the selected file and, if it passes, replaces the entire current `.env` file |
 | Log | The last 300 lines of what the bot writes |
 
-- The panel is available only on this computer, there is no password.
-- Remote API access is off by default. Connect the computer and phone to the same Tailscale network, add `REMOTE_ENABLED=true` to `.env`, and restart the application. The CLI reads `.env` from the working directory, and the desktop app reads it from its data folder. Tailscale encrypts the HTTP traffic within the network. The panel stays on this computer. The device list and revocation work even when the bot is stopped. [Troubleshooting and phone test](docs/development.en.md#remote-access-over-tailscale)
-- Your own image is kept in the data folder next to the database: Discord gets it from there. With Telegram and `TELEGRAM_ADMIN_ID`, the bot also sends it to you in a private chat so that Telegram stores the file_id. Without Telegram or without `TELEGRAM_ADMIN_ID` the image is uploaded from the panel and stored only locally (sent to Telegram, if enabled, as a file).
-- Without Telegram, bot commands and messages to the admin are unavailable; everything else, including the announcement text and the image, is done in the panel.
-- If the settings are filled in with an error, the bot will not start, but the panel will show the error — it can be fixed on the "Settings" tab.
+- The panel is available only on the computer running the bot and requires no password.
+- "Connection check" and both test announcement buttons send real messages even with `DRY_RUN` enabled. A test announcement goes only to the selected destination, is marked "🧪 Test", and is silent in Telegram.
+- The panel stores your uploaded image in the data folder next to the database. With Telegram and `TELEGRAM_ADMIN_ID` configured, the bot also sends the image to your private chat on upload to get a `file_id`. If Telegram is configured without an admin ID, it sends the image to the group as a file. You can set the announcement text and image in the panel with any delivery destination.
+- If a settings error prevents the bot from starting, the panel shows the reason. Fix it on the "Settings" tab.
+
+### Devices and remote API
+
+The `v0.4.0` tag includes local `/api/v1` access. The "Devices" tab, QR pairing, and remote access over Tailscale were added on the branch after that tag. A phone can connect to the API with an HTTP client. The native app is still in the planning stage. [Mobile app plan](docs/mobile-app-plan.md)
+
+Remote API access is off by default. Connect the computer and phone to the same Tailscale network, set `REMOTE_ENABLED=true` in `.env`, and fully restart the app (choose "Quit" in the icon menu, then open it again). The desktop app reads `.env` from its data folder, and the CLI reads it from the working directory. Tailscale encrypts HTTP traffic between devices. [Tailscale encryption](https://tailscale.com/docs/concepts/tailscale-encryption)
+
+On the "Devices" tab, click "Connect phone". The panel shows a QR code with a one-time code when the remote API is running on a verified Tailscale address. The tab also shows device names, connection dates, last use, and status. "Disconnect" revokes the device token. You can list devices and revoke access even when the bot is stopped.
+
+[Troubleshooting and phone test](docs/development.en.md#remote-access-over-tailscale) · [API v1 specification](docs/api-v1.yaml)
 
 ## Bot commands
 
@@ -77,13 +122,13 @@ The interface and the announcement texts come in Russian and English and are con
 
 ## What the messages look like
 
-**Announcement** — a photo with a caption:
+**Announcement** in Telegram. If the announcement includes an image, the text appears as its caption.
 
 ```
 Hello everyone
 
-🔴 <stream title on Twitch>
-🎮 <game on Twitch>
+🔴 <stream title on the primary platform>
+🎮 <game or category>
 
 <text from /text or the panel>
 
@@ -93,11 +138,11 @@ Hello everyone
 ▶️ VK Live
 ```
 
-**Stream ended** — a separate text message:
+**Stream ended** appears as a separate text message.
 
 ```
-⚫️ <stream title on Twitch>
-🎮 <game on Twitch>
+⚫️ <stream title on the primary platform>
+🎮 <game or category>
 
 Stream ended, it lasted 2 h 47 min
 
@@ -109,11 +154,18 @@ Thanks to everyone who dropped by the stream, you can watch the replay here:
 ▶️ VK Live
 ```
 
-The platform name is a clickable link. In Discord the content is the same, but it is a card. The announcement contains the platforms that were live at the moment of sending, the summary — all configured channels. If links are marked "always in the announcement" on the "Message" tab, only they go into the announcement, in list order, regardless of where you are live. They do not change the stream end or the summary. The marked links together must fit into the Telegram caption (about 700 characters with markup), otherwise the panel will not save the list. The 🎮 line is absent if no category is chosen on Twitch; the line with the text is absent if it is not set. The announcement does not go out immediately but 90 seconds after the first platform, to wait for the others; with marked links there is no need to wait for the others, so the announcement goes out as soon as the platform that the title and game are taken from (Twitch) is live, and without it — after the same 90 seconds. The title and game are taken from Twitch, the preview is your own (if set) or the Twitch one. Discord gets the same picture: your own, otherwise the Twitch preview, otherwise text only. The detailed rules are in the [developer document](docs/development.en.md).
+- **Title and game.** Use the "Title, game and preview are taken from" field (`PRIMARY_PLATFORM`) to choose the primary platform. The default is Twitch. If the bot hasn't detected the current stream on that platform, it uses "Live stream" as the title. The game and your custom text appear when provided.
+- **Image.** Both destinations use your uploaded preview when available. Otherwise Telegram uses an available preview from the primary platform, while Discord uses a platform preview only when Twitch is primary. If no suitable image is available, Telegram sends text and Discord sends a card without an image.
+- **Announcement links.** The bot normally includes clickable links to the platforms that are live when it sends the announcement. If any links on the "Message" tab are marked "Always in announcement", it includes only those links, in list order. You can add platforms the bot doesn't monitor. To save the list, the marked links must fit in the space reserved in the Telegram caption (about 700 characters including markup).
+- **Announcement delay.** The bot normally waits `ANNOUNCE_GRACE_MS` after detecting the first live platform (90 seconds by default). With marked links, it can send the announcement sooner, as soon as it detects the primary platform live. If that platform hasn't appeared, the usual delay applies.
+- **Stream summary.** With `ANNOUNCE_END` enabled (the default), the bot sends the summary only to destinations that received the announcement. All monitored platforms must report that the stream is offline, and `OFFLINE_GRACE_MS` must have elapsed since the stream was last seen live (3 minutes by default). The summary links to the configured channels regardless of the "Always in announcement" settings.
+- **VK Video.** If `VKVIDEO_REPLAY_URL` is set, the standard announcement includes that link alongside VK Live when VK Live is streaming. The summary includes the link when a VK Live channel is configured.
+
+See the [developer guide](docs/development.en.md) for the full rules.
 
 ## Updates and data
 
-Once a day the app checks the latest release on GitHub; if there is a newer one, the icon menu shows "Version X is available — download". Download the new installer and install it over the old one: settings and the database are kept. The current version is shown in the icon menu and in the panel header.
+The app checks for updates on GitHub at startup and once a day after that. If a newer version is available, the icon menu shows "Version X is available — download". Install the new version over the previous one to keep your settings and database. The icon menu and panel header show the current version.
 
 The data lives in `~/Library/Application Support/Анонсы стримов/` on Mac and `%APPDATA%\Анонсы стримов\` on Windows: the `.env` and `bot.db` files. On Windows the data is stored separately for each user, so run the bot under a single account.
 
