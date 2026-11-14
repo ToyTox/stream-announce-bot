@@ -1,19 +1,12 @@
 import { format } from 'node:util';
+import type { LogLevel, LogLine } from '../shared/api-v1.js';
 
 /**
  * Последние строки консоли для вкладки «Лог» в панели. Перехватываем console,
  * а не заводим отдельный логгер: весь бот уже пишет через console.*.
  */
 
-export type LogLevel = 'info' | 'warn' | 'error';
-
-export interface LogLine {
-  /** Сквозной номер: панель запрашивает только то, что новее последнего увиденного. */
-  seq: number;
-  time: number;
-  level: LogLevel;
-  text: string;
-}
+export type { LogLevel, LogLine };
 
 const MAX_LINES = 300;
 

@@ -8,11 +8,12 @@ import {
   FinishedInput,
 } from './announceTemplate.js';
 import axios from 'axios';
+import type { Broadcast, DeliveryChannel as DeliveryChannelId, PlatformStatus } from '../shared/api-v1.js';
 import type { AnnounceImage } from './announceImage.js';
 import type { Config } from './config.js';
 import { DiscordClient, DiscordError, type DiscordFile } from './discord/client.js';
 import { t } from './i18n/index.js';
-import { Store, type DeliveryRow } from './store.js';
+import { Store } from './store.js';
 import { TelegramClient, TelegramError, type SendOptions } from './telegram/client.js';
 import { LiveStream, PLATFORMS, PLATFORM_LABELS, Platform } from './types.js';
 import type { BaseWatcher } from './watchers/base.js';
@@ -49,20 +50,12 @@ export interface AnnouncerDeps {
 /** Итог последней проверки площадки — для панели. */
 export interface PlatformState {
   platform: Platform;
-  state: 'live' | 'offline' | 'error';
+  state: Exclude<PlatformStatus['state'], 'pending'>;
   error?: string;
   checkedAt: number;
 }
 
-export interface BroadcastStatus {
-  startedAt: number;
-  announcedAt: number | null;
-  chatId: string | null;
-  messageId: number | null;
-  platforms: Platform[];
-  /** Состояние доставки по площадкам (Telegram, Discord). */
-  deliveries: Array<{ channel: string; label: string; state: DeliveryRow['state'] }>;
-}
+export type BroadcastStatus = Omit<Broadcast, 'messageUrl'>;
 
 /** Что нужно площадке, чтобы собрать анонс: Telegram и Discord берут картинку по-разному. */
 interface AnnounceRequest {
@@ -107,7 +100,7 @@ interface Prepared<T> {
  */
 interface DeliveryChannel {
   /** Ключ в базе. */
-  id: string;
+  id: DeliveryChannelId;
   label: string;
   /** Постоянная ошибка: повторять бессмысленно. */
   isPermanent(error: unknown): boolean;
