@@ -1,7 +1,9 @@
-/** Платформы, за которыми умеет следить бот. Порядок важен: в нём идут ссылки в анонсе. */
-export const PLATFORMS = ['twitch', 'youtube', 'vkvideo'] as const;
+import type { Platform } from '../shared/api-v1.js';
 
-export type Platform = (typeof PLATFORMS)[number];
+export type { Platform };
+
+/** Платформы, за которыми умеет следить бот. Порядок важен: в нём идут ссылки в анонсе. */
+export const PLATFORMS = ['twitch', 'youtube', 'vkvideo'] as const satisfies readonly Platform[];
 
 export const PLATFORM_LABELS: Record<Platform, string> = {
   twitch: 'Twitch',

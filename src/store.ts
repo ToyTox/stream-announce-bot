@@ -1,3 +1,4 @@
+import type { DeliveryState, Link } from '../shared/api-v1.js';
 import { ANNOUNCE_HEAD_RESERVE, CAPTION_LIMIT, linksBlock } from './announceTemplate.js';
 import type { Db } from './db.js';
 import { isPlatform, LiveStream, Platform } from './types.js';
@@ -31,7 +32,7 @@ export interface BroadcastStreamRow {
   endedAt: number | null;
 }
 
-export type DeliveryState = 'pending' | 'sent' | 'failed';
+export type { DeliveryState };
 
 /** Доставка анонса эфира на одну площадку. */
 export interface DeliveryRow {
@@ -130,11 +131,7 @@ export const SETTING_STATIC_LINKS = 'static_links';
 export const SETTING_LINKS_SNAPSHOT = 'announce_links_snapshot';
 
 /** Ссылка из списка пользователя; always — «всегда в анонсе». Порядок в списке = порядок в анонсе. */
-export interface StaticLink {
-  label: string;
-  url: string;
-  always: boolean;
-}
+export type StaticLink = Link;
 
 /** Ссылки анонса, зафиксированные на первой доставке эфира; links = null — анонс шёл с живыми стримами. */
 export interface LinksSnapshot {
