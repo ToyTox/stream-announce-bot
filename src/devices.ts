@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import type { PairingResult } from '../shared/api-v1.js';
 import type { Db } from './db.js';
 
 /**
@@ -48,12 +49,12 @@ export class DeviceStore {
   constructor(private readonly db: Db) {}
 
   /** Выпускает токен: возвращает его открытым, в базу пишет только хэш. */
-  issue(name: string, now = Date.now()): { device: DeviceRow; token: string } {
+  issue(name: string, now = Date.now()): PairingResult {
     const token = randomBytes(32).toString('base64url');
     const result = this.db
       .prepare('INSERT INTO device (name, token_hash, created_at) VALUES (?, ?, ?)')
       .run(name, hashToken(token), now);
-    const device: DeviceRow = { id: Number(result.lastInsertRowid), name, createdAt: now, lastUsedAt: null, revokedAt: null };
+    const device: PairingResult['device'] = { id: Number(result.lastInsertRowid), name, createdAt: now, lastUsedAt: null, revokedAt: null };
     return { device, token };
   }
 

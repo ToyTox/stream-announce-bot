@@ -1,28 +1,29 @@
+import type { PublicSettingFieldView, SecretSettingFieldView, SettingFieldType, SettingFieldView } from '../../shared/api-v1.js';
 import type { Env } from '../config.js';
 import { DEFAULT_LANGUAGE, languageOptions, t, type Lang } from '../i18n/index.js';
 
 /**
  * Описание полей формы настроек. Панель рисует форму по этому списку,
- * так что новая настройка добавляется одной строкой здесь и ключами в словарях:
- * подпись — setting.<KEY>.label, подсказка (если hint) — setting.<KEY>.hint.
+ * Новая настройка добавляется здесь и в список ключей shared/api-v1.d.ts.
+ * Ключи словаря: подпись — setting.<KEY>.label, подсказка — setting.<KEY>.hint.
  */
 
-export type FieldType = 'text' | 'number' | 'bool' | 'select';
+export type FieldType = SettingFieldType;
 
-export interface SettingField {
-  key: string;
+export type SettingField = (
+  | Pick<PublicSettingFieldView, 'key' | 'secret'>
+  | Pick<SecretSettingFieldView, 'key' | 'secret'>
+) & {
   /** Идентификатор группы; подпись — settings.group.<group>. */
   group: string;
   type: FieldType;
   /** Есть ли подсказка в словаре. */
   hint?: boolean;
-  /** Значение не отдаётся в браузер целиком; пустое поле при сохранении — «не менять». */
-  secret?: boolean;
   /** label — готовая подпись (названия площадок), labelKey — ключ словаря. */
   options?: Array<{ value: string; label?: string; labelKey?: string }>;
   /** Значение по умолчанию из loadConfig — чтобы форма показывала, что реально действует. */
   placeholder?: string;
-}
+};
 
 /** Пустое значение — «авто» (язык системы) или «как у интерфейса», дальше — по языку из каждого словаря. */
 function languageChoices(emptyLabelKey: string): NonNullable<SettingField['options']> {
@@ -115,7 +116,7 @@ export function settingGuides(lang: Lang = DEFAULT_LANGUAGE): GroupGuide[] {
   }));
 }
 
-const FIELDS_BY_KEY = new Map(SETTING_FIELDS.map((field) => [field.key, field]));
+const FIELDS_BY_KEY = new Map<string, SettingField>(SETTING_FIELDS.map((field) => [field.key, field]));
 
 export function maskSecret(value: string): string {
   if (value.length <= 8) return '••••';
@@ -123,18 +124,7 @@ export function maskSecret(value: string): string {
 }
 
 /** Поле для браузера: тексты уже на нужном языке, group — подпись группы. */
-export interface FieldView {
-  key: string;
-  group: string;
-  label: string;
-  type: FieldType;
-  hint?: string;
-  secret?: boolean;
-  options?: Array<{ value: string; label: string }>;
-  placeholder?: string;
-  value: string;
-  isSet: boolean;
-}
+export type FieldView = PublicSettingFieldView | (Omit<SecretSettingFieldView, 'value'> & { value: string });
 
 export function settingsView(env: Env, lang: Lang = DEFAULT_LANGUAGE): FieldView[] {
   return SETTING_FIELDS.map((field) => {
@@ -154,10 +144,7 @@ export function settingsView(env: Env, lang: Lang = DEFAULT_LANGUAGE): FieldView
   });
 }
 
-/** Поле для API v1: у секретов значения нет совсем, даже маски — только isSet. */
-export type FieldViewV1 = Omit<FieldView, 'value'> & { value?: string };
-
-export function settingsViewV1(env: Env, lang: Lang = DEFAULT_LANGUAGE): FieldViewV1[] {
+export function settingsViewV1(env: Env, lang: Lang = DEFAULT_LANGUAGE): SettingFieldView[] {
   return settingsView(env, lang).map((field) => {
     if (!field.secret) return field;
     const { value, ...rest } = field;

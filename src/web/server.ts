@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type * as ApiV1 from '../../shared/api-v1.js';
 import { channelUrl } from '../announcer.js';
 import type { Bot } from '../bot.js';
 import { ConfigError, loadConfig, type Env } from '../config.js';
@@ -88,7 +89,7 @@ const DEVICE_NAME_MAX = 64;
 const JSON_LIMIT = 64 * 1024;
 /** Лимит Telegram на фото. */
 const IMAGE_LIMIT = 10 * 1024 * 1024;
-const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const IMAGE_TYPES: readonly ApiV1.ImageContentType[] = ['image/jpeg', 'image/png', 'image/webp'];
 const RATE_WINDOW_MS = 60 * 1000;
 const RATE_MAX_KEYS = 4096;
 const TAILSCALE_CHECK_MS = 5000;
@@ -135,7 +136,7 @@ function requestLanguage(req: IncomingMessage, env: Env): Lang {
   return resolveLanguage(env.APP_LANGUAGE, locale);
 }
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson<Body>(res: ServerResponse, status: number, body: Body): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
 }
@@ -151,12 +152,14 @@ async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+type ParsedJson<Body> = Partial<Record<keyof Body, unknown>>;
+
+async function readJson<Body = Record<string, unknown>>(req: IncomingMessage): Promise<ParsedJson<Body>> {
   const raw = (await readBody(req, JSON_LIMIT)).toString('utf8');
   if (!raw) return {};
   try {
     const parsed: unknown = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+    return parsed && typeof parsed === 'object' ? (parsed as ParsedJson<Body>) : {};
   } catch {
     throw HttpError.localized(400, 'server.badJson');
   }
@@ -293,7 +296,7 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
     return { store, id: device.id, key: `${devicesDb!.path}:${device.id}` };
   }
 
-  function status(lang: Lang) {
+  function status(lang: Lang): ApiV1.StatusResponse {
     const bot = runtime.bot;
     if (!bot) return { version, running: false, configError: configErrorText(runtime, lang) };
 
@@ -323,10 +326,11 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
   }
 
   /** Общая часть PUT настроек: проверка, запись в .env, перезапуск бота. */
-  async function saveSettings(values: unknown, lang: Lang, source: string): Promise<Record<string, unknown>> {
+  async function saveSettings(values: unknown, lang: Lang, source: string): Promise<ApiV1.SettingsWriteResult> {
     const changes = settingsChanges(values, env);
-    const changed = Object.keys(changes);
-    if (changed.length === 0) return { ok: true, changed };
+    const [first, ...rest] = Object.keys(changes);
+    if (first === undefined) return { ok: true, changed: [] };
+    const changed: [string, ...string[]] = [first, ...rest];
 
     // Сначала проверка: невалидный конфиг не должен попасть ни в .env, ни в работающего бота.
     try {
@@ -399,7 +403,7 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
       }
 
       case 'POST /api/v1/pair': {
-        const body = await readJson(req);
+        const body = await readJson<ApiV1.PairingRequest>(req);
         if (typeof body.code !== 'string' || typeof body.name !== 'string') throw HttpError.localized(400, 'server.pairing.badBody');
         const name = body.name.trim();
         if (name === '') throw HttpError.localized(400, 'server.pairing.emptyName');
@@ -408,11 +412,11 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
         if (!store) throw HttpError.localized(503, 'server.pairing.noRegistry');
         // Неверный, просроченный и уже использованный код неразличимы в ответе.
         if (!pairing.redeem(body.code)) throw HttpError.localized(401, 'server.pairing.badCode');
-        return sendJson(res, 200, store.issue(name));
+        return sendJson<ApiV1.PairingResult>(res, 200, store.issue(name));
       }
 
       case 'GET /api/v1/info':
-        return sendJson(res, 200, { apiVersion: API_VERSION, version });
+        return sendJson<ApiV1.InfoResponse>(res, 200, { apiVersion: API_VERSION, version });
 
       case 'GET /api/status':
       case 'GET /api/v1/status':
@@ -427,24 +431,37 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
       case 'POST /api/v1/test-message': {
         const bot = needBot();
         const text = t(lang, 'server.testMessage');
-        const targets = [
-          ...(bot.telegram ? [{ channel: 'telegram', label: 'Telegram', send: () => bot.telegram!.sendMessage(text) }] : []),
-          ...(bot.discord
-            ? [{ channel: 'discord', label: 'Discord', send: () => bot.discord!.send({ embeds: [{ description: text }] }) }]
-            : []),
-        ];
+        const sendTest = async (
+          target: ApiV1.TestMessageTarget,
+          send: () => Promise<unknown>
+        ): Promise<ApiV1.TestMessageDelivery> => {
+          try {
+            await send();
+            return { ...target, ok: true };
+          } catch (error) {
+            return { ...target, ok: false, error: errorText(error) };
+          }
+        };
+
         // Площадки независимы: сбой одной не скрывает успех другой.
-        const results = await Promise.all(
-          targets.map(async ({ channel, label, send }) => {
-            try {
-              await send();
-              return { channel, label, ok: true };
-            } catch (error) {
-              return { channel, label, ok: false, error: errorText(error) };
-            }
-          })
-        );
-        return sendJson(res, 200, { ok: results.every((result) => result.ok), results });
+        const { telegram, discord } = bot;
+        const [telegramResult, discordResult] = await Promise.all([
+          telegram && sendTest({ channel: 'telegram', label: 'Telegram' }, () => telegram.sendMessage(text)),
+          discord && sendTest({ channel: 'discord', label: 'Discord' }, () => discord.send({ embeds: [{ description: text }] })),
+        ]);
+
+        let result: ApiV1.TestMessageResult;
+        if (telegramResult?.ok === false) {
+          result = { ok: false, results: discordResult ? [telegramResult, discordResult] : [telegramResult] };
+        } else if (discordResult?.ok === false) {
+          result = { ok: false, results: telegramResult ? [telegramResult, discordResult] : [discordResult] };
+        } else if (telegramResult && discordResult) {
+          result = { ok: true, results: [telegramResult, discordResult] };
+        } else {
+          const delivered = telegramResult ?? discordResult;
+          result = { ok: true, results: delivered ? [delivered] : [] };
+        }
+        return sendJson(res, 200, result);
       }
 
       case 'POST /api/test-announce/telegram':
@@ -460,35 +477,35 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
         } catch (error) {
           throw new HttpError(502, errorText(error));
         }
-        return sendJson(res, 200, { ok: true });
+        return sendJson<ApiV1.OkResponse>(res, 200, { ok: true });
       }
 
       case 'GET /api/text':
       case 'GET /api/v1/text':
-        return sendJson(res, 200, { text: needBot().store.announceText() });
+        return sendJson<ApiV1.TextResponse>(res, 200, { text: needBot().store.announceText() });
 
       case 'PUT /api/text':
       case 'PUT /api/v1/text': {
         const store = needBot().store;
-        const body = await readJson(req);
+        const body = await readJson<ApiV1.TextWriteRequest>(req);
         recheckRemoteBearer();
         const text = typeof body.text === 'string' ? body.text.trim() : '';
         if (text) store.setAnnounceText(text);
         else store.clearAnnounceText();
-        return sendJson(res, 200, { text: store.announceText() });
+        return sendJson<ApiV1.TextResponse>(res, 200, { text: store.announceText() });
       }
 
       case 'GET /api/links':
       case 'GET /api/v1/links':
-        return sendJson(res, 200, { links: needBot().store.staticLinks() });
+        return sendJson<ApiV1.LinksResponse>(res, 200, { links: needBot().store.staticLinks() });
 
       case 'PUT /api/links':
       case 'PUT /api/v1/links': {
         const store = needBot().store;
-        const body = await readJson(req);
+        const body = await readJson<ApiV1.LinksWriteRequest>(req);
         recheckRemoteBearer();
         try {
-          return sendJson(res, 200, { links: store.setStaticLinks(body.links) });
+          return sendJson<ApiV1.LinksResponse>(res, 200, { links: store.setStaticLinks(body.links) });
         } catch (error) {
           if (error instanceof StaticLinksError) throw HttpError.localized(400, error.key, error.params);
           throw error;
@@ -498,22 +515,23 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
       case 'DELETE /api/text':
       case 'DELETE /api/v1/text':
         needBot().store.clearAnnounceText();
-        return sendJson(res, 200, { text: null });
+        return sendJson<ApiV1.TextDeleteResponse>(res, 200, { text: null });
 
       case 'PUT /api/image':
       case 'PUT /api/v1/image': {
         const bot = needBot();
-        const type = (req.headers['content-type'] ?? '').split(';')[0]!.trim();
-        if (!IMAGE_TYPES.has(type)) throw HttpError.localized(415, 'server.imageTypes');
+        const contentType = (req.headers['content-type'] ?? '').split(';')[0]!.trim();
+        const type = IMAGE_TYPES.find((allowed) => allowed === contentType);
+        if (type === undefined) throw HttpError.localized(415, 'server.imageTypes');
 
-        const data = await readBody(req, IMAGE_LIMIT);
+        const data: ApiV1.ImageFile['data'] = await readBody(req, IMAGE_LIMIT);
         recheckRemoteBearer();
 
         // Загрузка в личку нужна, только чтобы получить file_id; без Telegram или админа картинка живёт локально.
         const adminId = bot.config.telegram?.adminId;
         if (!bot.telegram || adminId === undefined) {
           bot.image.setLocal({ data, type });
-          return sendJson(res, 200, { ok: true });
+          return sendJson<ApiV1.OkResponse>(res, 200, { ok: true });
         }
 
         let fileId: string | undefined;
@@ -530,7 +548,7 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
         if (!fileId) throw HttpError.localized(502, 'server.noFileId');
 
         bot.image.set(fileId, { data, type });
-        return sendJson(res, 200, { ok: true });
+        return sendJson<ApiV1.OkResponse>(res, 200, { ok: true });
       }
 
       case 'GET /api/image/file':
@@ -538,7 +556,7 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
         const bot = needBot();
         if (!bot.store.announcePhoto()) throw HttpError.localized(404, 'server.noImage');
         // Копия на диске; если её нет, load() один раз скачает файл из Telegram (без Telegram — null).
-        let image: Awaited<ReturnType<typeof bot.image.load>>;
+        let image: ApiV1.ImageFile<string> | null;
         try {
           image = await bot.image.load();
         } catch (error) {
@@ -553,12 +571,12 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
       case 'DELETE /api/image':
       case 'DELETE /api/v1/image':
         needBot().image.clear();
-        return sendJson(res, 200, { ok: true });
+        return sendJson<ApiV1.OkResponse>(res, 200, { ok: true });
 
       case 'GET /api/preview':
       case 'GET /api/v1/preview': {
         const bot = needBot();
-        return sendJson(res, 200, {
+        return sendJson<ApiV1.PreviewResponse>(res, 200, {
           ...bot.announcer.preview(),
           photo: bot.image.has() ? 'custom' : 'twitch',
         });
@@ -572,7 +590,7 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
         });
 
       case 'GET /api/v1/settings':
-        return sendJson(res, 200, {
+        return sendJson<ApiV1.SettingsResponse>(res, 200, {
           fields: settingsViewV1(env, lang),
           configError: configErrorText(runtime, lang),
         });
@@ -583,7 +601,7 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
       }
 
       case 'PUT /api/v1/settings': {
-        const body = await readJson(req);
+        const body = await readJson<ApiV1.SettingsWriteRequest>(req);
         recheckRemoteBearer();
         if (hasSecretKey(body.values)) throw HttpError.localized(400, 'server.secretsViaApi');
         return sendJson(res, 200, await saveSettings(body.values, lang, 'через API'));
@@ -640,8 +658,8 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
 
       case 'GET /api/logs':
       case 'GET /api/v1/logs': {
-        const after = Number(url.searchParams.get('after') ?? 0) || 0;
-        return sendJson(res, 200, { lines: recentLogs(after) });
+        const after: ApiV1.LogsQuery['after'] = Number(url.searchParams.get('after') ?? 0) || 0;
+        return sendJson<ApiV1.LogsResponse>(res, 200, { lines: recentLogs(after) });
       }
 
       default:
@@ -704,7 +722,7 @@ export function createPanel(deps: PanelDeps): Panel & { startRemote(): Promise<v
         const status = error instanceof HttpError ? error.status : 500;
         if (status === 500) console.error('❌ Ошибка панели:', errorText(error));
         const message = error instanceof HttpError && error.key ? t(lang, error.key, error.params) : errorText(error);
-        if (!res.headersSent) sendJson(res, status, { error: message });
+        if (!res.headersSent) sendJson<ApiV1.ErrorResponse>(res, status, { error: message });
         else res.end();
       }
     })();
