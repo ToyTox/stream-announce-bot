@@ -107,6 +107,28 @@ The icon changes: a ring — not live, a filled circle — live, with "!" — te
 
 For checks you can set a separate data folder: `STREAM_BOT_USER_DATA=/tmp/bot-test npm run desktop`.
 
+## Mobile app
+
+The independent scaffold in `mobile/` uses React Native, Expo SDK 58 and TypeScript: five Russian placeholder screens, tabs with system back history and system light/dark themes. The initial screen is “Сопряжение” (Pairing). Bot connection, API access, scanning and working actions are not implemented yet; all sections open without connecting or requesting device permissions. Changing the theme preserves the selected tab; an unknown system theme falls back to light.
+
+From the repository root, with Node.js 22.13+ on the 22 release line (other supported release lines are listed in `mobile/package.json`):
+
+```sh
+npm --prefix mobile ci
+npm --prefix mobile start
+npm --prefix mobile run typecheck
+npm --prefix mobile test -- --runInBand
+```
+
+Running requires an Expo Go client compatible with SDK 58 on a phone or running emulator. The additional commands `npm --prefix mobile run android` and `npm --prefix mobile run ios` open the client without building an installer. The bot is not needed to check placeholders. Check dependency compatibility and the JavaScript bundle from `mobile/`:
+
+```sh
+CI=1 npx expo install --check
+npx expo export --platform android
+```
+
+Dependencies, lockfile, type checking and Jest are isolated in `mobile/`; root commands retain their existing scope. The bundle is written to ignored `mobile/dist/`. Startup, system back, themes and safe areas have not yet been checked manually on a device. [Structure, limitations and manual checks (Russian)](../mobile/README.md).
+
 ## Releasing a version
 
 The installers are built by GitHub Actions, nothing needs to be uploaded by hand:
