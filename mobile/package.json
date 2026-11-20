@@ -1,0 +1,38 @@
+{
+  "name": "stream-announce-mobile",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Мобильный пульт анонсов стримов: каркас приложения",
+  "main": "index.ts",
+  "engines": {
+    "node": "^22.13.0 || ^24.3.0 || ^26.0.0 || >=27.0.0"
+  },
+  "scripts": {
+    "start": "expo start --go",
+    "android": "expo start --go --android",
+    "ios": "expo start --go --ios",
+    "typecheck": "tsc --noEmit",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@react-navigation/bottom-tabs": "^7.22.0",
+    "@react-navigation/native": "^7.5.2",
+    "expo": "~58.0.26",
+    "expo-navigation-bar": "~58.0.4",
+    "expo-status-bar": "~58.0.5",
+    "expo-system-ui": "~58.0.7",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-safe-area-context": "~5.11.1",
+    "react-native-screens": "~4.30.1"
+  },
+  "devDependencies": {
+    "@testing-library/react-native": "^14.1.0",
+    "@types/jest": "^30.0.0",
+    "@types/react": "~19.3.0",
+    "jest": "^30.2.0",
+    "jest-expo": "~58.0.15",
+    "test-renderer": "^1.3.1",
+    "typescript": "~6.0.3"
+  }
+}

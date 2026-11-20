@@ -93,7 +93,7 @@ After saving your settings, open "Status" and click "Connection check". The pane
 
 ### Devices and remote API
 
-The `v0.4.0` tag includes local `/api/v1` access. The "Devices" tab, QR pairing, and remote access over Tailscale were added on the branch after that tag. A phone can connect to the API with an HTTP client. The native app is still in the planning stage. [Mobile app plan](docs/mobile-app-plan.md)
+The `v0.4.0` tag includes local `/api/v1` access. The "Devices" tab, QR pairing, and remote access over Tailscale were added on the branch after that tag. A phone can connect to the API with an HTTP client. The `mobile/` app scaffold now has five placeholder screens, navigation and system light/dark themes. Bot connection and working actions are not implemented yet; no installer is available. [Run the scaffold (Russian)](mobile/README.md) · [Mobile app plan](docs/mobile-app-plan.md)
 
 Remote API access is off by default. Connect the computer and phone to the same Tailscale network, set `REMOTE_ENABLED=true` in `.env`, and fully restart the app (choose "Quit" in the icon menu, then open it again). The desktop app reads `.env` from its data folder, and the CLI reads it from the working directory. Tailscale encrypts HTTP traffic between devices. [Tailscale encryption](https://tailscale.com/docs/concepts/tailscale-encryption)
 

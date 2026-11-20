@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Анонсы стримов",
+    "slug": "stream-announce-mobile",
+    "version": "0.4.0",
+    "userInterfaceStyle": "automatic",
+    "platforms": [
+      "android",
+      "ios"
+    ],
+    "android": {
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
+    },
+    "plugins": [
+      "expo-system-ui",
+      [
+        "expo-navigation-bar",
+        {
+          "enforceContrast": false
+        }
+      ],
+      "expo-status-bar"
+    ]
+  }
+}
