@@ -22,7 +22,14 @@
           "enforceContrast": false
         }
       ],
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true,
+          "faceIDPermission": false
+        }
+      ]
     ]
   }
 }
