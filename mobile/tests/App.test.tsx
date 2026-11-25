@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { NavigationBar } from 'expo-navigation-bar';
+import * as SecureStore from 'expo-secure-store';
 import { Appearance, BackHandler, Platform } from 'react-native';
 import App from '../App';
 
@@ -63,7 +64,7 @@ describe('каркас приложения', () => {
     for (const [title, description] of sections) {
       await openSection(title);
       expect(screen.getByText(description)).toBeOnTheScreen();
-      expect(screen.getByText('Это каркас приложения. Подключение к боту пока недоступно.')).toBeOnTheScreen();
+      expect(screen.getByText('Это каркас приложения. Рабочие действия появятся позже.')).toBeOnTheScreen();
     }
 
     await openSection('Сопряжение');
@@ -118,5 +119,40 @@ describe('каркас приложения', () => {
 
     expect(await systemBack()).toBe(true);
     expect(screen.getByRole('header', { name: 'Сопряжение' })).toBeOnTheScreen();
+  });
+
+  it('восстанавливает сохранённое подключение, сохраняет тему и навигацию, удаляет токен локально', async () => {
+    const token = 'C'.repeat(43);
+    jest.mocked(SecureStore.getItemAsync).mockResolvedValue(JSON.stringify({ format: 1, apiUrl: 'https://bot.example/api/v1', token }));
+    const request = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true, json: async () => ({ apiVersion: 1, version: '' }),
+    } as Response);
+    scheme = 'dark';
+    await render(<App />);
+    expect(await screen.findByText('Бот подключён. API совместим.')).toBeOnTheScreen();
+    expect(screen.getByRole('header', { name: 'Сопряжение' })).toHaveStyle({ color: '#edf2fa' });
+    await openSection('Статус');
+    await openSection('Сообщение');
+    expect(await systemBack()).toBe(true);
+    expect(screen.getByRole('header', { name: 'Статус' })).toBeOnTheScreen();
+    await openSection('Сопряжение');
+    await fireEvent.press(screen.getByRole('button', { name: 'Удалить токен с телефона' }));
+    expect(await screen.findByRole('header', { name: 'Сопряжение' })).toBeOnTheScreen();
+    expect(screen.queryByText('Бот подключён. API совместим.')).toBeNull();
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('при недоступности повторяет подключение с сохранённым токеном', async () => {
+    jest.mocked(SecureStore.getItemAsync).mockResolvedValue(JSON.stringify({ format: 1, apiUrl: 'https://bot.example/api/v1', token: 'D'.repeat(43) }));
+    const request = jest.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('Нет сети')).mockResolvedValue({
+      ok: true, json: async () => ({ apiVersion: 1, version: '1.0' }),
+    } as Response);
+    await render(<App />);
+    expect(await screen.findByRole('header', { name: 'Бот недоступен' })).toBeOnTheScreen();
+    expect(SecureStore.deleteItemAsync).not.toHaveBeenCalled();
+    await fireEvent.press(screen.getByRole('button', { name: 'Повторить' }));
+    expect(await screen.findByText('Бот подключён. API совместим.')).toBeOnTheScreen();
+    expect(request).toHaveBeenCalledTimes(2);
   });
 });

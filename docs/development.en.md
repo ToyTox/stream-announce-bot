@@ -109,7 +109,11 @@ For checks you can set a separate data folder: `STREAM_BOT_USER_DATA=/tmp/bot-te
 
 ## Mobile app
 
-The independent scaffold in `mobile/` uses React Native, Expo SDK 58 and TypeScript: five Russian placeholder screens, tabs with system back history and system light/dark themes. The initial screen is “Сопряжение” (Pairing). Bot connection, API access, scanning and working actions are not implemented yet; all sections open without connecting or requesting device permissions. Changing the theme preserves the selected tab; an unknown system theme falls back to light.
+The independent scaffold in `mobile/` uses React Native, Expo SDK 58 and TypeScript: five Russian placeholder screens, tabs with system back history and system light/dark themes. Without a saved record, “Сопряжение” (Pairing) opens and all sections are available offline. With a record, the app restores the address and token from protected storage and sends an authorized `GET /api/v1/info`: only API version 1 is compatible; the bot application version may be empty. Scanning, the user pairing flow and working actions belong to later tasks. Changing the theme preserves the selected tab and history; an unknown system theme falls back to light.
+
+The token is sent only in `Authorization: Bearer …`; raw errors and secrets never appear in messages or logs. Storage operations have a 5-second deadline; the whole network request, including its body, has a 10-second deadline. Separate screens cover an unavailable bot with retry, authorization and access denial, incompatible API, invalid responses and storage failures. There are no automatic retries; `Retry-After` limits manual retry, and late responses cannot restore a deleted or replaced connection. A network failure preserves the record; deleting the local token does not revoke the server device. Address and token are stored together in `expo-secure-store`, excluded from Android backup and migration to another iOS device; biometrics and new permissions are not used. A stalled write or deletion may complete later, so a timeout never confirms success.
+
+A clean installation cannot obtain a token yet: only the internal `useConnection().connect(credentials)` entry point for future pairing exists, without manual token input or simulated success. Plain HTTP may be blocked by iOS and Android transport policies; the development client's behavior does not guarantee that of a future native build. Check network reachability and the certificate for a phone-accessible HTTPS address; native release settings are outside this task. [Network limitations](https://reactnative.dev/docs/network), [protected storage](https://docs.expo.dev/versions/latest/sdk/securestore/).
 
 From the repository root, with Node.js 22.13+ on the 22 release line (other supported release lines are listed in `mobile/package.json`):
 
@@ -123,11 +127,11 @@ npm --prefix mobile test -- --runInBand
 Running requires an Expo Go client compatible with SDK 58 on a phone or running emulator. The additional commands `npm --prefix mobile run android` and `npm --prefix mobile run ios` open the client without building an installer. The bot is not needed to check placeholders. Check dependency compatibility and the JavaScript bundle from `mobile/`:
 
 ```sh
-CI=1 npx expo install --check
-npx expo export --platform android
+CI=1 npx --no-install expo install --check
+npx --no-install expo export --platform android
 ```
 
-Dependencies, lockfile, type checking and Jest are isolated in `mobile/`; root commands retain their existing scope. The bundle is written to ignored `mobile/dist/`. Startup, system back, themes and safe areas have not yet been checked manually on a device. [Structure, limitations and manual checks (Russian)](../mobile/README.md).
+Dependencies, lockfile, type checking and Jest are isolated in `mobile/`; root commands retain their existing scope. The bundle is written to ignored `mobile/dist/`. Tests replace network and native storage while using real navigation. Token restoration and deletion, unavailability and retry, system back, themes and safe areas have not yet been checked manually on a device. With an existing protected record, check restart, network loss and recovery, then local deletion and startup without a bot request; never display the token or include it in commands or screenshots. Until pairing is available, record creation is covered by automated tests. [Structure, limitations and manual checks (Russian)](../mobile/README.md).
 
 ## Releasing a version
 
